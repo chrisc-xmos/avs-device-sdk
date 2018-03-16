@@ -278,7 +278,7 @@ bool HTTP2Transport::isConnected() {
 void HTTP2Transport::send(std::shared_ptr<MessageRequest> request) {
     std::cout << "\n";
     std::cout << request->getJsonContent();
-    std::cout << "\n;
+    std::cout << "\n";
     if (!request) {
         ACSDK_ERROR(LX("sendFailed").d("reason", "nullRequest"));
     } else if (!enqueueRequest(request, false)) {
