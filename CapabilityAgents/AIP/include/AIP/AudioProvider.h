@@ -1,7 +1,5 @@
 /*
- * AudioProvider.h
- *
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -15,8 +13,8 @@
  * permissions and limitations under the License.
  */
 
-#ifndef ALEXA_CLIENT_SDK_CAPABILITY_AGENT_AIP_INCLUDE_AIP_AUDIO_PROVIDER_H_
-#define ALEXA_CLIENT_SDK_CAPABILITY_AGENT_AIP_INCLUDE_AIP_AUDIO_PROVIDER_H_
+#ifndef ALEXA_CLIENT_SDK_CAPABILITYAGENTS_AIP_INCLUDE_AIP_AUDIOPROVIDER_H_
+#define ALEXA_CLIENT_SDK_CAPABILITYAGENTS_AIP_INCLUDE_AIP_AUDIOPROVIDER_H_
 
 #include <AVSCommon/AVS/AudioInputStream.h>
 #include <AVSCommon/Utils/AudioFormat.h>
@@ -55,7 +53,7 @@ struct AudioProvider {
      * This function provides an invalid AudioProvider which has no stream associated with it.
      *
      * @return An invalid AudioProvider which has no stream associated with it.
-     */    
+     */
     static const AudioProvider& null();
 
     /**
@@ -92,20 +90,30 @@ inline AudioProvider::AudioProvider(
     bool alwaysReadable,
     bool canOverride,
     bool canBeOverridden)
-    // Note: There is an issue with braced initialization of an aggregate type in GCC 4.8, so parentheses are used
-    //     below to initialize format.
-    : stream{stream}, format(format), profile{profile}, alwaysReadable{alwaysReadable}, canOverride{canOverride},
+        // Note: There is an issue with braced initialization of an aggregate type in GCC 4.8, so parentheses are used
+        //     below to initialize format.
+        :
+        stream{stream},
+        format(format),
+        profile{profile},
+        alwaysReadable{alwaysReadable},
+        canOverride{canOverride},
         canBeOverridden{canBeOverridden} {
 }
 
 inline const AudioProvider& AudioProvider::null() {
-    static AudioProvider nullAudioProvider{
-        nullptr,
-        {avsCommon::utils::AudioFormat::Encoding::LPCM, avsCommon::utils::AudioFormat::Endianness::LITTLE, 0, 0, 0},
-        ASRProfile::CLOSE_TALK,
-        false,
-        false,
-        false};
+    static AudioProvider nullAudioProvider{nullptr,
+                                           {avsCommon::utils::AudioFormat::Encoding::LPCM,
+                                            avsCommon::utils::AudioFormat::Endianness::LITTLE,
+                                            0,
+                                            0,
+                                            0,
+                                            true,
+                                            avsCommon::utils::AudioFormat::Layout::NON_INTERLEAVED},
+                                           ASRProfile::CLOSE_TALK,
+                                           false,
+                                           false,
+                                           false};
     return nullAudioProvider;
 }
 
@@ -113,9 +121,8 @@ inline AudioProvider::operator bool() const {
     return stream != nullptr;
 }
 
+}  // namespace aip
+}  // namespace capabilityAgents
+}  // namespace alexaClientSDK
 
-} // namespace aip
-} // namespace capabilityAgents
-} // namespace alexaClientSDK
-
-#endif //ALEXA_CLIENT_SDK_CAPABILITY_AGENT_AIP_INCLUDE_AIP_AUDIO_PROVIDER_H_
+#endif  // ALEXA_CLIENT_SDK_CAPABILITYAGENTS_AIP_INCLUDE_AIP_AUDIOPROVIDER_H_

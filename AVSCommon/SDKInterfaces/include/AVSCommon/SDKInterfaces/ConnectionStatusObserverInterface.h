@@ -1,7 +1,5 @@
 /*
- * ConnectionStatusObserverInterface.h
- *
- * Copyright 2016-2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2016-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -15,8 +13,8 @@
  * permissions and limitations under the License.
  */
 
-#ifndef ALEXA_CLIENT_SDK_AVS_COMMON_SDK_INTERFACES_INCLUDE_AVS_COMMON_SDK_INTERFACES_CONNECTION_STATUS_OBSERVER_INTERFACE_H_
-#define ALEXA_CLIENT_SDK_AVS_COMMON_SDK_INTERFACES_INCLUDE_AVS_COMMON_SDK_INTERFACES_CONNECTION_STATUS_OBSERVER_INTERFACE_H_
+#ifndef ALEXA_CLIENT_SDK_AVSCOMMON_SDKINTERFACES_INCLUDE_AVSCOMMON_SDKINTERFACES_CONNECTIONSTATUSOBSERVERINTERFACE_H_
+#define ALEXA_CLIENT_SDK_AVSCOMMON_SDKINTERFACES_INCLUDE_AVSCOMMON_SDKINTERFACES_CONNECTIONSTATUSOBSERVERINTERFACE_H_
 
 #include <iostream>
 
@@ -40,16 +38,22 @@ public:
         PENDING,
 
         /// ACL is connected to AVS.
-        CONNECTED,
-
-        /// ACL is connected and has done any necessary post-connection actions.
-        POST_CONNECTED
+        CONNECTED
     };
 
     /**
      * This enum expresses the reasons a connection status may change.
      */
     enum class ChangedReason {
+        /// The non-reason, to be used when no reason is specified (i.e. the 'unset' value).
+        NONE,
+
+        /// The status changed to due to a successful operation.
+        SUCCESS,
+
+        /// The status changed due to an error from which there is no recovery.
+        UNRECOVERABLE_ERROR,
+
         /// The connection status changed due to the client interacting with the Connection public api.
         ACL_CLIENT_REQUEST,
 
@@ -114,7 +118,7 @@ public:
  * @param status The ConnectionStatusObserverInterface::Status value to write to the @c ostream as a string.
  * @return The @c ostream that was passed in and written to.
  */
-inline std::ostream& operator << (std::ostream& stream, ConnectionStatusObserverInterface::Status status) {
+inline std::ostream& operator<<(std::ostream& stream, ConnectionStatusObserverInterface::Status status) {
     switch (status) {
         case ConnectionStatusObserverInterface::Status::DISCONNECTED:
             stream << "DISCONNECTED";
@@ -124,9 +128,6 @@ inline std::ostream& operator << (std::ostream& stream, ConnectionStatusObserver
             break;
         case ConnectionStatusObserverInterface::Status::CONNECTED:
             stream << "CONNECTED";
-            break;
-        case ConnectionStatusObserverInterface::Status::POST_CONNECTED:
-            stream << "POST_CONNECTED";
             break;
     }
     return stream;
@@ -139,8 +140,17 @@ inline std::ostream& operator << (std::ostream& stream, ConnectionStatusObserver
  * @param reason The ConnectionStatusObserverInterface::ChangeReason value to write to the @c ostream as a string.
  * @return The @c ostream that was passed in and written to.
  */
-inline std::ostream& operator << (std::ostream& stream, ConnectionStatusObserverInterface::ChangedReason reason) {
+inline std::ostream& operator<<(std::ostream& stream, ConnectionStatusObserverInterface::ChangedReason reason) {
     switch (reason) {
+        case ConnectionStatusObserverInterface::ChangedReason::NONE:
+            stream << "NONE";
+            break;
+        case ConnectionStatusObserverInterface::ChangedReason::SUCCESS:
+            stream << "SUCCESS";
+            break;
+        case ConnectionStatusObserverInterface::ChangedReason::UNRECOVERABLE_ERROR:
+            stream << "UNRECOVERABLE_ERROR";
+            break;
         case ConnectionStatusObserverInterface::ChangedReason::ACL_CLIENT_REQUEST:
             stream << "ACL_CLIENT_REQUEST";
             break;
@@ -187,8 +197,8 @@ inline std::ostream& operator << (std::ostream& stream, ConnectionStatusObserver
     return stream;
 }
 
-} // namespace sdkInterfaces
-} // namespace avsCommon
-} // namespace alexaClientSDK
+}  // namespace sdkInterfaces
+}  // namespace avsCommon
+}  // namespace alexaClientSDK
 
-#endif // ALEXA_CLIENT_SDK_AVS_COMMON_SDK_INTERFACES_INCLUDE_AVS_COMMON_SDK_INTERFACES_CONNECTION_STATUS_OBSERVER_INTERFACE_H_
+#endif  // ALEXA_CLIENT_SDK_AVSCOMMON_SDKINTERFACES_INCLUDE_AVSCOMMON_SDKINTERFACES_CONNECTIONSTATUSOBSERVERINTERFACE_H_

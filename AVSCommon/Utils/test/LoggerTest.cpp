@@ -1,7 +1,5 @@
 /*
- * LoggerTest.cpp
- *
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -30,7 +28,6 @@ namespace test {
 
 using namespace ::testing;
 
-
 /// Macro used to initial creation of log entries for this source.
 #define LX(event) LogEntry(TEST_SOURCE_STRING, event)
 
@@ -53,10 +50,12 @@ using namespace ::testing;
 #define ESCAPED_METADATA_VALUE R"(reserved_chars['\\' '\,' '\:' '\='])"
 
 /// Expected output string for test of boolean metadata.
+// clang-format off
 #define METADATA_EXPECTED_BOOLEANS                      \
         METADATA_KEY_TRUE KEY_VALUE_SEPARATOR "true"    \
         KEY_VALUE_PAIR_SEPARATOR                        \
         METADATA_KEY_FALSE KEY_VALUE_SEPARATOR "false"
+// clang-format on
 
 /// String used to test that the source component is logged
 static const std::string TEST_SOURCE_STRING = "<The_Source_Of_Log_Entries>";
@@ -71,19 +70,20 @@ static const std::string UNESCAPED_METADATA_VALUE = R"(reserved_chars['\' ',' ':
 static const std::string TEST_MESSAGE_STRING = "Hello World!";
 /// Another String used to test that the message component is logged
 static const std::string TEST_MESSAGE_STRING_1 = "World Hello!";
+/// A const char* nullptr to verify the logger won't crash in degenerate cases
+static const char* TEST_MESSAGE_CONST_NULL_CHAR_PTR = nullptr;
+/// A char* nullptr to verify the logger won't crash in degenerate cases
+static char* TEST_MESSAGE_NULL_CHAR_PTR = nullptr;
 
 /**
  * Mock derivation of Logger for verifying calls and parameters to those calls.
  */
 class MockLogger : public Logger {
 public:
-
     MOCK_METHOD1(shouldLog, bool(Level level));
-    MOCK_METHOD4(emit, void(
-            Level level,
-            std::chrono::system_clock::time_point time,
-            const char *threadMoniker,
-            const char *text));
+    MOCK_METHOD4(
+        emit,
+        void(Level level, std::chrono::system_clock::time_point time, const char* threadMoniker, const char* text));
 
     /**
      * Create a new MockLogger instance.
@@ -104,11 +104,7 @@ public:
      * @param threadMoniker Moniker of the thread that generated the event.
      * @param text The text of the log entry.
      */
-    void mockEmit(
-            Level level,
-            std::chrono::system_clock::time_point time,
-            const char *threadId,
-            const char *text);
+    void mockEmit(Level level, std::chrono::system_clock::time_point time, const char* threadId, const char* text);
 
     /// The last time value passed in a log(...) call.
     std::chrono::system_clock::time_point m_lastTime;
@@ -154,39 +150,35 @@ public:
      */
     TestLogger();
 
-    void emit(
-            Level level,
-            std::chrono::system_clock::time_point time,
-            const char *threadMoniker,
-            const char *text) override;
+    void emit(Level level, std::chrono::system_clock::time_point time, const char* threadMoniker, const char* text)
+        override;
 };
 
 TestLogger::TestLogger() : Logger(Level::DEBUG9) {
 }
 
 void TestLogger::emit(
-        Level level,
-        std::chrono::system_clock::time_point time,
-        const char *threadMoniker,
-        const char *text) {
+    Level level,
+    std::chrono::system_clock::time_point time,
+    const char* threadMoniker,
+    const char* text) {
     g_log->emit(level, time, threadMoniker, text);
 }
 
 // Temporarily back out of namespace "test" to put getLoggerTestLogger() in the required namespace.
-} // namespace test
+}  // namespace test
 
 /**
  * Function for ACSDK_* macros to use to get the @c Logger to use.
  * @return The @c Logger to use.
  */
-Logger& getLoggerTestLogger() {
-    static test::TestLogger testLogger;
+std::shared_ptr<Logger> getLoggerTestLogger() {
+    static std::shared_ptr<Logger> testLogger = std::make_shared<test::TestLogger>();
     return testLogger;
 }
 
 // Return to namespace "test"
 namespace test {
-
 
 std::shared_ptr<NiceMock<MockLogger>> MockLogger::create() {
     auto result = std::make_shared<NiceMock<MockLogger>>();
@@ -199,10 +191,10 @@ MockLogger::MockLogger() : Logger(Level::DEBUG9) {
 }
 
 void MockLogger::mockEmit(
-        Level level,
-        std::chrono::system_clock::time_point time,
-        const char *threadMoniker,
-        const char *text) {
+    Level level,
+    std::chrono::system_clock::time_point time,
+    const char* threadMoniker,
+    const char* text) {
     m_lastTime = time;
     m_lastThreadMoniker = threadMoniker;
     m_lastText = text;
@@ -213,7 +205,7 @@ MockModuleLogger::MockModuleLogger() : ModuleLogger(ACSDK_STRINGIFY(ACSDK_LOG_SI
 
 MockModuleLogger::~MockModuleLogger() {
     LoggerSinkManager::instance().removeSinkObserver(this);
-    m_sink.load()->removeLogLevelObserver(this);
+    m_sink->removeLogLevelObserver(this);
 }
 
 /**
@@ -239,7 +231,8 @@ protected:
 
 void LoggerTest::SetUp() {
     // make sure getLoggerTestLogger() is used as sink
-    LoggerSinkManager::instance().changeSinkLogger(getLoggerTestLogger());
+    g_log = MockLogger::create();
+    LoggerSinkManager::instance().initialize(getLoggerTestLogger());
 }
 
 void LoggerTest::TearDown() {
@@ -247,8 +240,6 @@ void LoggerTest::TearDown() {
 }
 
 void LoggerTest::setLevelExpectations(Level level) {
-
-    g_log = MockLogger::create();
     ACSDK_GET_LOGGER_FUNCTION().setLevel(level);
 
     switch (level) {
@@ -347,7 +338,7 @@ void LoggerTest::exerciseLevels() {
  * Test delivery of log messages when the log level is set to DEBUG9.  This test sets the log level to DEBUG9
  * and then verifies that all logs (except those compiled off) are passed through to the emit() method.
  */
-TEST_F(LoggerTest, logDebug9Level) {
+TEST_F(LoggerTest, test_logDebug9Level) {
     setLevelExpectations(Level::DEBUG9);
     exerciseLevels();
 }
@@ -356,7 +347,7 @@ TEST_F(LoggerTest, logDebug9Level) {
  * Test delivery of log messages when the log level is set to DEBUG8.  This test sets the log level to DEBUG8
  * and then verifies that all logs (except those compiled off) are passed through to the emit() method.
  */
-TEST_F(LoggerTest, logDebug8Level) {
+TEST_F(LoggerTest, test_logDebug8Level) {
     setLevelExpectations(Level::DEBUG8);
     exerciseLevels();
 }
@@ -365,7 +356,7 @@ TEST_F(LoggerTest, logDebug8Level) {
  * Test delivery of log messages when the log level is set to DEBUG7.  This test sets the log level to DEBUG7
  * and then verifies that all logs (except those compiled off) are passed through to the emit() method.
  */
-TEST_F(LoggerTest, logDebug7Level) {
+TEST_F(LoggerTest, test_logDebug7Level) {
     setLevelExpectations(Level::DEBUG7);
     exerciseLevels();
 }
@@ -374,7 +365,7 @@ TEST_F(LoggerTest, logDebug7Level) {
  * Test delivery of log messages when the log level is set to DEBUG6.  This test sets the log level to DEBUG6
  * and then verifies that all logs (except those compiled off) are passed through to the emit() method.
  */
-TEST_F(LoggerTest, logDebug6Level) {
+TEST_F(LoggerTest, test_logDebug6Level) {
     setLevelExpectations(Level::DEBUG6);
     exerciseLevels();
 }
@@ -383,7 +374,7 @@ TEST_F(LoggerTest, logDebug6Level) {
  * Test delivery of log messages when the log level is set to DEBUG5.  This test sets the log level to DEBUG5
  * and then verifies that all logs (except those compiled off) are passed through to the emit() method.
  */
-TEST_F(LoggerTest, logDebug5Level) {
+TEST_F(LoggerTest, test_logDebug5Level) {
     setLevelExpectations(Level::DEBUG5);
     exerciseLevels();
 }
@@ -392,7 +383,7 @@ TEST_F(LoggerTest, logDebug5Level) {
  * Test delivery of log messages when the log level is set to DEBUG4.  This test sets the log level to DEBUG4
  * and then verifies that all logs (except those compiled off) are passed through to the emit() method.
  */
-TEST_F(LoggerTest, logDebug4Level) {
+TEST_F(LoggerTest, test_logDebug4Level) {
     setLevelExpectations(Level::DEBUG4);
     exerciseLevels();
 }
@@ -401,7 +392,7 @@ TEST_F(LoggerTest, logDebug4Level) {
  * Test delivery of log messages when the log level is set to DEBUG3.  This test sets the log level to DEBUG3
  * and then verifies that all logs (except those compiled off) are passed through to the emit() method.
  */
-TEST_F(LoggerTest, logDebug3Level) {
+TEST_F(LoggerTest, test_logDebug3Level) {
     setLevelExpectations(Level::DEBUG3);
     exerciseLevels();
 }
@@ -410,7 +401,7 @@ TEST_F(LoggerTest, logDebug3Level) {
  * Test delivery of log messages when the log level is set to DEBUG2.  This test sets the log level to DEBUG2
  * and then verifies that all logs (except those compiled off) are passed through to the emit() method.
  */
-TEST_F(LoggerTest, logDebug2Level) {
+TEST_F(LoggerTest, test_logDebug2Level) {
     setLevelExpectations(Level::DEBUG2);
     exerciseLevels();
 }
@@ -419,7 +410,7 @@ TEST_F(LoggerTest, logDebug2Level) {
  * Test delivery of log messages when the log level is set to DEBUG1.  This test sets the log level to DEBUG1
  * and then verifies that only logs of DEBUG or above are passed through to the emit() method.
  */
-TEST_F(LoggerTest, logDebug1Level) {
+TEST_F(LoggerTest, test_logDebug1Level) {
     setLevelExpectations(Level::DEBUG1);
     exerciseLevels();
 }
@@ -428,7 +419,7 @@ TEST_F(LoggerTest, logDebug1Level) {
  * Test delivery of log messages when the log level is set to DEBUG1.  This test sets the log level to DEBUG0
  * and then verifies that only logs of DEBUG or above are passed through to the emit() method.
  */
-TEST_F(LoggerTest, logDebug0Level) {
+TEST_F(LoggerTest, test_logDebug0Level) {
     setLevelExpectations(Level::DEBUG0);
     exerciseLevels();
 }
@@ -437,7 +428,7 @@ TEST_F(LoggerTest, logDebug0Level) {
  * Test delivery of log messages when the log level is set to INFO.  This test sets the log level to INFO
  * and then verifies that only logs of INFO or above are passed through to the emit() method.
  */
-TEST_F(LoggerTest, logInfoLevel) {
+TEST_F(LoggerTest, test_logInfoLevel) {
     setLevelExpectations(Level::INFO);
     exerciseLevels();
 }
@@ -446,7 +437,7 @@ TEST_F(LoggerTest, logInfoLevel) {
  * Test delivery of log messages when the log level is set to WARN.  This test sets the log level to WARN
  * and then verifies that only logs of WARN or above are passed through to the emit() method.
  */
-TEST_F(LoggerTest, logWarnLevel) {
+TEST_F(LoggerTest, test_logWarnLevel) {
     setLevelExpectations(Level::WARN);
     exerciseLevels();
 }
@@ -455,7 +446,7 @@ TEST_F(LoggerTest, logWarnLevel) {
  * Test delivery of log messages when the log level is set to ERROR.  This test sets the log level to ERROR
  * and then verifies that only logs of ERROR or above are passed through to the emit() method.
  */
-TEST_F(LoggerTest, logErrorLevel) {
+TEST_F(LoggerTest, test_logErrorLevel) {
     setLevelExpectations(Level::ERROR);
     exerciseLevels();
 }
@@ -464,7 +455,7 @@ TEST_F(LoggerTest, logErrorLevel) {
  * Test delivery of log messages when the log level is set to CRITICAL.  This test sets the log level to CRITICAL
  * and then verifies that only CRITICAL logs are passed through to the emit() method.
  */
-TEST_F(LoggerTest, logCriticalLevel) {
+TEST_F(LoggerTest, test_logCriticalLevel) {
     setLevelExpectations(Level::CRITICAL);
     exerciseLevels();
 }
@@ -473,9 +464,40 @@ TEST_F(LoggerTest, logCriticalLevel) {
  * Test delivery of log messages when the log level is set to NONE.  This test sets the log level to NONE
  * and then verifies that no logs are passed through to the emit() method.
  */
-TEST_F(LoggerTest, logNoneLevel) {
+TEST_F(LoggerTest, test_logNoneLevel) {
     setLevelExpectations(Level::NONE);
     exerciseLevels();
+}
+
+/**
+ * Test to ensure that logger usage with possible nullptr inputs is robust.  As some functionality is templated,
+ * we must test both char* and const char* variants, for LogEntry construction, and the .d() and .m() functionality.
+ */
+TEST_F(LoggerTest, test_nullInputs) {
+    ACSDK_GET_LOGGER_FUNCTION().setLevel(Level::INFO);
+
+    EXPECT_CALL(*(g_log.get()), emit(Level::INFO, _, _, _)).Times(13);
+
+    // The good case.
+    ACSDK_INFO(LX("testEntryName").d("key", "value"));
+
+    // Test the constructors.
+    ACSDK_INFO(LX(TEST_MESSAGE_CONST_NULL_CHAR_PTR).m("testEventNameConstNullPtr"));
+    ACSDK_INFO(LX(TEST_MESSAGE_NULL_CHAR_PTR).m("testEventNameNullPtr"));
+
+    // Test the .d() bad variants, both params.
+    ACSDK_INFO(LX("testEntryName").d("key", TEST_MESSAGE_CONST_NULL_CHAR_PTR));
+    ACSDK_INFO(LX("testEntryName").d("key", TEST_MESSAGE_NULL_CHAR_PTR));
+    ACSDK_INFO(LX("testEntryName").d(TEST_MESSAGE_CONST_NULL_CHAR_PTR, "value"));
+    ACSDK_INFO(LX("testEntryName").d(TEST_MESSAGE_NULL_CHAR_PTR, "value"));
+    ACSDK_INFO(LX("testEntryName").d(TEST_MESSAGE_CONST_NULL_CHAR_PTR, TEST_MESSAGE_CONST_NULL_CHAR_PTR));
+    ACSDK_INFO(LX("testEntryName").d(TEST_MESSAGE_CONST_NULL_CHAR_PTR, TEST_MESSAGE_NULL_CHAR_PTR));
+    ACSDK_INFO(LX("testEntryName").d(TEST_MESSAGE_NULL_CHAR_PTR, TEST_MESSAGE_CONST_NULL_CHAR_PTR));
+    ACSDK_INFO(LX("testEntryName").d(TEST_MESSAGE_NULL_CHAR_PTR, TEST_MESSAGE_NULL_CHAR_PTR));
+
+    // Test the .m() variants.
+    ACSDK_INFO(LX("testEntryName").m(TEST_MESSAGE_CONST_NULL_CHAR_PTR));
+    ACSDK_INFO(LX("testEntryName").m(TEST_MESSAGE_NULL_CHAR_PTR));
 }
 
 /**
@@ -483,8 +505,7 @@ TEST_F(LoggerTest, logNoneLevel) {
  * both before and after an invocation of ACDK_LOG_INFO and verifies that the time value passed to the
  * emit() method is between (inclusive) the before and after times.
  */
-TEST_F(LoggerTest, verifyTime) {
-    g_log = MockLogger::create();
+TEST_F(LoggerTest, test_verifyTime) {
     ACSDK_GET_LOGGER_FUNCTION().setLevel(Level::INFO);
 
     EXPECT_CALL(*(g_log.get()), emit(Level::INFO, _, _, _)).Times(1);
@@ -499,13 +520,12 @@ TEST_F(LoggerTest, verifyTime) {
  * Test delivery of appropriate thread moniker values from the logging system.  This test invokes ACSDK_INFO from
  * two threads and verifies that the thread moniker values passed to the emit() method are in fact different.
  */
-TEST_F(LoggerTest, verifyThreadMoniker) {
-    g_log = MockLogger::create();
+TEST_F(LoggerTest, test_verifyThreadMoniker) {
     ACSDK_GET_LOGGER_FUNCTION().setLevel(Level::INFO);
     EXPECT_CALL(*(g_log.get()), emit(Level::INFO, _, _, _)).Times(2);
     ACSDK_INFO(LX("testing threadMoniker (1 of 2)"));
     auto firstThreadMoniker = g_log->m_lastThreadMoniker;
-    std::thread secondThread([this, firstThreadMoniker]() {
+    std::thread secondThread([firstThreadMoniker]() {
         ACSDK_INFO(LX("testing threadMoniker (2 of 2)"));
         ASSERT_NE(firstThreadMoniker, g_log->m_lastThreadMoniker);
     });
@@ -517,8 +537,7 @@ TEST_F(LoggerTest, verifyThreadMoniker) {
  * constructor.  Expect that the source parameter passed to the LogEntry constructor is included in the text
  * passed to the emit() method.
  */
-TEST_F(LoggerTest, verifySource) {
-    g_log = MockLogger::create();
+TEST_F(LoggerTest, test_verifySource) {
     ACSDK_GET_LOGGER_FUNCTION().setLevel(Level::INFO);
     EXPECT_CALL(*(g_log.get()), emit(Level::INFO, _, _, _)).Times(1);
     ACSDK_INFO(LX("random_event"));
@@ -530,8 +549,7 @@ TEST_F(LoggerTest, verifySource) {
  * constructor.  Expect that the event parameter passed to the LogEntry constructor is included in the text
  * passed to the emit() method.
  */
-TEST_F(LoggerTest, verifyEvent) {
-    g_log = MockLogger::create();
+TEST_F(LoggerTest, test_verifyEvent) {
     ACSDK_GET_LOGGER_FUNCTION().setLevel(Level::INFO);
     EXPECT_CALL(*(g_log.get()), emit(Level::INFO, _, _, _)).Times(1);
     std::string event(TEST_EVENT_STRING);
@@ -544,12 +562,13 @@ TEST_F(LoggerTest, verifyEvent) {
  * Expects that that metadata is constructed properly (including the escaping of reserved characters) and that
  * both the key and escaped value are included in the text passed to the emit() method.
  */
-TEST_F(LoggerTest, verifyMetadata) {
-    g_log = MockLogger::create();
+TEST_F(LoggerTest, test_verifyMetadata) {
     ACSDK_GET_LOGGER_FUNCTION().setLevel(Level::INFO);
     EXPECT_CALL(*(g_log.get()), emit(Level::INFO, _, _, _)).Times(1);
     ACSDK_INFO(LX("testing metadata")
-            .d(METADATA_KEY, UNESCAPED_METADATA_VALUE).d(METADATA_KEY_TRUE, true).d(METADATA_KEY_FALSE, false));
+                   .d(METADATA_KEY, UNESCAPED_METADATA_VALUE)
+                   .d(METADATA_KEY_TRUE, true)
+                   .d(METADATA_KEY_FALSE, false));
     ASSERT_NE(g_log->m_lastText.find(METADATA_KEY KEY_VALUE_SEPARATOR ESCAPED_METADATA_VALUE), std::string::npos);
     ASSERT_NE(g_log->m_lastText.find(METADATA_EXPECTED_BOOLEANS), std::string::npos);
 }
@@ -558,8 +577,7 @@ TEST_F(LoggerTest, verifyMetadata) {
  * Test passing a message parameter to the logging system.  Invokes ACSDK_INFO with a message parameter.
  * Expects that the message is included in text passed to the emit() method.
  */
-TEST_F(LoggerTest, verifyMessage) {
-    g_log = MockLogger::create();
+TEST_F(LoggerTest, test_verifyMessage) {
     ACSDK_GET_LOGGER_FUNCTION().setLevel(Level::INFO);
     EXPECT_CALL(*(g_log.get()), emit(Level::INFO, _, _, _)).Times(1);
     std::string message(TEST_MESSAGE_STRING);
@@ -570,8 +588,7 @@ TEST_F(LoggerTest, verifyMessage) {
 /**
  * Test passing sensitive data to the logging system.  It should only be emitted in DEBUG builds.
  */
-TEST_F(LoggerTest, testSensitiveDataSuppressed) {
-    g_log = MockLogger::create();
+TEST_F(LoggerTest, test_sensitiveDataSuppressed) {
     ACSDK_GET_LOGGER_FUNCTION().setLevel(Level::INFO);
     EXPECT_CALL(*(g_log.get()), emit(Level::INFO, _, _, _)).Times(1);
     ACSDK_INFO(LX("testing metadata").sensitive(METADATA_KEY, UNESCAPED_METADATA_VALUE));
@@ -588,25 +605,25 @@ TEST_F(LoggerTest, testSensitiveDataSuppressed) {
  * callback of the MockModuleLogger is triggered.  Also make sure any changes to sink's logLevel is ignored
  * after the MockModuleLogger's logLevel has been set.
  */
-TEST_F(LoggerTest, testModuleLoggerObserver) {
+TEST_F(LoggerTest, test_moduleLoggerObserver) {
     MockModuleLogger mockModuleLogger;
-    getLoggerTestLogger().setLevel(Level::WARN);
+    getLoggerTestLogger()->setLevel(Level::WARN);
     ASSERT_EQ(mockModuleLogger.getLogLevel(), Level::WARN);
     mockModuleLogger.setLevel(Level::CRITICAL);
     ASSERT_EQ(mockModuleLogger.getLogLevel(), Level::CRITICAL);
-    getLoggerTestLogger().setLevel(Level::NONE);
-    ASSERT_EQ(mockModuleLogger.getLogLevel(), Level::CRITICAL);
+    getLoggerTestLogger()->setLevel(Level::NONE);
+    ASSERT_EQ(mockModuleLogger.getLogLevel(), Level::NONE);
 }
 
 /**
  * Test observer mechanism with multiple observers.  Expects all observers to be notified of the logLevel change.
  */
-TEST_F(LoggerTest, testMultipleModuleLoggerObservers) {
+TEST_F(LoggerTest, test_multipleModuleLoggerObservers) {
     MockModuleLogger mockModuleLogger1;
     MockModuleLogger mockModuleLogger2;
     MockModuleLogger mockModuleLogger3;
 
-    getLoggerTestLogger().setLevel(Level::WARN);
+    getLoggerTestLogger()->setLevel(Level::WARN);
     ASSERT_EQ(mockModuleLogger1.getLogLevel(), Level::WARN);
     ASSERT_EQ(mockModuleLogger2.getLogLevel(), Level::WARN);
     ASSERT_EQ(mockModuleLogger3.getLogLevel(), Level::WARN);
@@ -616,8 +633,8 @@ TEST_F(LoggerTest, testMultipleModuleLoggerObservers) {
     ASSERT_EQ(mockModuleLogger2.getLogLevel(), Level::WARN);
     ASSERT_EQ(mockModuleLogger3.getLogLevel(), Level::WARN);
 
-    getLoggerTestLogger().setLevel(Level::NONE);
-    ASSERT_EQ(mockModuleLogger1.getLogLevel(), Level::CRITICAL);
+    getLoggerTestLogger()->setLevel(Level::NONE);
+    ASSERT_EQ(mockModuleLogger1.getLogLevel(), Level::NONE);
     ASSERT_EQ(mockModuleLogger2.getLogLevel(), Level::NONE);
     ASSERT_EQ(mockModuleLogger3.getLogLevel(), Level::NONE);
 }
@@ -626,12 +643,12 @@ TEST_F(LoggerTest, testMultipleModuleLoggerObservers) {
  * Test changing of sink logger using the LoggerSinkManager.  Expect the sink in
  * ModuleLoggers will be changed.
  */
-TEST_F(LoggerTest, testChangeSinkLogger) {
-    g_log = MockLogger::create();
+TEST_F(LoggerTest, test_changeSinkLogger) {
     std::shared_ptr<MockLogger> sink1 = MockLogger::create();
+    std::shared_ptr<Logger> sink1Logger = sink1;
 
     // reset loglevel to INFO
-    getLoggerTestLogger().setLevel(Level::INFO);
+    getLoggerTestLogger()->setLevel(Level::INFO);
 
     // ModuleLoggers uses TestLogger as sink, so there shouldn't be any message
     // sent to sink1
@@ -640,17 +657,17 @@ TEST_F(LoggerTest, testChangeSinkLogger) {
     ASSERT_EQ(sink1->m_lastText.find(TEST_MESSAGE_STRING), std::string::npos);
 
     // change to use sink1, now log message should be sent to sink1
-    LoggerSinkManager::instance().changeSinkLogger(*sink1);
+    LoggerSinkManager::instance().initialize(sink1Logger);
     ACSDK_INFO(LX(TEST_MESSAGE_STRING_1));
     ASSERT_NE(g_log->m_lastText.find(TEST_MESSAGE_STRING), std::string::npos);
     ASSERT_NE(sink1->m_lastText.find(TEST_MESSAGE_STRING_1), std::string::npos);
 
     // reset to the default sink to avoid messing up with subsequent tests
-    LoggerSinkManager::instance().changeSinkLogger(getLoggerTestLogger());
+    LoggerSinkManager::instance().initialize(getLoggerTestLogger());
 }
 
-} // namespace test
-} // namespace logger
-} // namespace avsCommon
-} // namespace utils
-} // namespace alexaClientSDK
+}  // namespace test
+}  // namespace logger
+}  // namespace utils
+}  // namespace avsCommon
+}  // namespace alexaClientSDK

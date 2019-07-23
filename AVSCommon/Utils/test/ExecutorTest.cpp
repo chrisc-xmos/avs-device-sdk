@@ -1,7 +1,5 @@
 /*
- * ExecutorTest.cpp
- *
- * Copyright 2016-2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -20,6 +18,7 @@
 
 #include "ExecutorTestUtils.h"
 #include "AVSCommon/Utils/Threading/Executor.h"
+#include "AVSCommon/Utils/WaitEvent.h"
 
 namespace alexaClientSDK {
 namespace avsCommon {
@@ -27,44 +26,46 @@ namespace utils {
 namespace threading {
 namespace test {
 
-class ExecutorTest: public ::testing::Test {
+using namespace utils::test;
+
+class ExecutorTest : public ::testing::Test {
 public:
     Executor executor;
 };
 
-TEST_F(ExecutorTest, submitStdFunctionAndVerifyExecution) {
-    std::function<void()> function = []() { };
+TEST_F(ExecutorTest, test_submitStdFunctionAndVerifyExecution) {
+    std::function<void()> function = []() {};
     auto future = executor.submit(function);
     auto future_status = future.wait_for(SHORT_TIMEOUT_MS);
     ASSERT_EQ(future_status, std::future_status::ready);
 }
 
-TEST_F(ExecutorTest, submitStdBindAndVerifyExecution) {
+TEST_F(ExecutorTest, test_submitStdBindAndVerifyExecution) {
     auto future = executor.submit(std::bind(exampleFunctionParams, 0));
     auto future_status = future.wait_for(SHORT_TIMEOUT_MS);
     ASSERT_EQ(future_status, std::future_status::ready);
 }
 
-TEST_F(ExecutorTest, submitLambdaAndVerifyExecution) {
-    auto future = executor.submit([]() { });
+TEST_F(ExecutorTest, test_submitLambdaAndVerifyExecution) {
+    auto future = executor.submit([]() {});
     auto future_status = future.wait_for(SHORT_TIMEOUT_MS);
     ASSERT_EQ(future_status, std::future_status::ready);
 }
 
-TEST_F(ExecutorTest, submitFunctionPointerAndVerifyExecution) {
+TEST_F(ExecutorTest, test_submitFunctionPointerAndVerifyExecution) {
     auto future = executor.submit(&exampleFunction);
     auto future_status = future.wait_for(SHORT_TIMEOUT_MS);
     ASSERT_EQ(future_status, std::future_status::ready);
 }
 
-TEST_F(ExecutorTest, submitFunctorAndVerifyExecution) {
+TEST_F(ExecutorTest, test_submitFunctorAndVerifyExecution) {
     ExampleFunctor exampleFunctor;
     auto future = executor.submit(exampleFunctor);
     auto future_status = future.wait_for(SHORT_TIMEOUT_MS);
     ASSERT_EQ(future_status, std::future_status::ready);
 }
 
-TEST_F(ExecutorTest, submitFunctionWithPrimitiveReturnTypeNoArgsAndVerifyExecution) {
+TEST_F(ExecutorTest, test_submitFunctionWithPrimitiveReturnTypeNoArgsAndVerifyExecution) {
     int value = VALUE;
     auto future = executor.submit([=]() { return value; });
     auto future_status = future.wait_for(SHORT_TIMEOUT_MS);
@@ -72,7 +73,7 @@ TEST_F(ExecutorTest, submitFunctionWithPrimitiveReturnTypeNoArgsAndVerifyExecuti
     ASSERT_EQ(future.get(), value);
 }
 
-TEST_F(ExecutorTest, submitFunctionWithObjectReturnTypeNoArgsAndVerifyExecution) {
+TEST_F(ExecutorTest, test_submitFunctionWithObjectReturnTypeNoArgsAndVerifyExecution) {
     SimpleObject value(VALUE);
     auto future = executor.submit([=]() { return value; });
     auto future_status = future.wait_for(SHORT_TIMEOUT_MS);
@@ -80,21 +81,21 @@ TEST_F(ExecutorTest, submitFunctionWithObjectReturnTypeNoArgsAndVerifyExecution)
     ASSERT_EQ(future.get().getValue(), value.getValue());
 }
 
-TEST_F(ExecutorTest, submitFunctionWithNoReturnTypePrimitiveArgsAndVerifyExecution) {
+TEST_F(ExecutorTest, test_submitFunctionWithNoReturnTypePrimitiveArgsAndVerifyExecution) {
     int value = VALUE;
-    auto future = executor.submit([](int number) { }, value);
+    auto future = executor.submit([](int number) {}, value);
     auto future_status = future.wait_for(SHORT_TIMEOUT_MS);
     ASSERT_EQ(future_status, std::future_status::ready);
 }
 
-TEST_F(ExecutorTest, submitFunctionWithNoReturnTypeObjectArgsAndVerifyExecution) {
+TEST_F(ExecutorTest, test_submitFunctionWithNoReturnTypeObjectArgsAndVerifyExecution) {
     SimpleObject arg(0);
-    auto future = executor.submit([](SimpleObject object) { }, arg);
+    auto future = executor.submit([](SimpleObject object) {}, arg);
     auto future_status = future.wait_for(SHORT_TIMEOUT_MS);
     ASSERT_EQ(future_status, std::future_status::ready);
 }
 
-TEST_F(ExecutorTest, submitFunctionWithPrimitiveReturnTypeObjectArgsAndVerifyExecution) {
+TEST_F(ExecutorTest, test_submitFunctionWithPrimitiveReturnTypeObjectArgsAndVerifyExecution) {
     int value = VALUE;
     SimpleObject arg(0);
     auto future = executor.submit([=](SimpleObject object) { return value; }, arg);
@@ -103,7 +104,7 @@ TEST_F(ExecutorTest, submitFunctionWithPrimitiveReturnTypeObjectArgsAndVerifyExe
     ASSERT_EQ(future.get(), value);
 }
 
-TEST_F(ExecutorTest, submitFunctionWithObjectReturnTypePrimitiveArgsAndVerifyExecution) {
+TEST_F(ExecutorTest, test_submitFunctionWithObjectReturnTypePrimitiveArgsAndVerifyExecution) {
     int arg = 0;
     SimpleObject value(VALUE);
     auto future = executor.submit([=](int primitive) { return value; }, arg);
@@ -112,7 +113,7 @@ TEST_F(ExecutorTest, submitFunctionWithObjectReturnTypePrimitiveArgsAndVerifyExe
     ASSERT_EQ(future.get().getValue(), value.getValue());
 }
 
-TEST_F(ExecutorTest, submitFunctionWithPrimitiveReturnTypePrimitiveArgsAndVerifyExecution) {
+TEST_F(ExecutorTest, test_submitFunctionWithPrimitiveReturnTypePrimitiveArgsAndVerifyExecution) {
     int arg = 0;
     int value = VALUE;
     auto future = executor.submit([=](int number) { return value; }, arg);
@@ -121,7 +122,7 @@ TEST_F(ExecutorTest, submitFunctionWithPrimitiveReturnTypePrimitiveArgsAndVerify
     ASSERT_EQ(future.get(), value);
 }
 
-TEST_F(ExecutorTest, submitFunctionWithObjectReturnTypeObjectArgsAndVerifyExecution) {
+TEST_F(ExecutorTest, test_submitFunctionWithObjectReturnTypeObjectArgsAndVerifyExecution) {
     SimpleObject value(VALUE);
     SimpleObject arg(0);
     auto future = executor.submit([=](SimpleObject object) { return value; }, arg);
@@ -130,20 +131,18 @@ TEST_F(ExecutorTest, submitFunctionWithObjectReturnTypeObjectArgsAndVerifyExecut
     ASSERT_EQ(future.get().getValue(), value.getValue());
 }
 
-TEST_F(ExecutorTest, submitToFront) {
+TEST_F(ExecutorTest, test_submitToFront) {
     std::atomic<bool> ready(false);
     std::atomic<bool> blocked(false);
     std::list<int> order;
 
     // submit a task which will block the executor
-    executor.submit(
-        [&] {
-            blocked = true;
-            while (!ready) {
-                std::this_thread::yield();
-            }
+    executor.submit([&] {
+        blocked = true;
+        while (!ready) {
+            std::this_thread::yield();
         }
-    );
+    });
 
     // wait for it to block
     while (!blocked) {
@@ -171,6 +170,30 @@ TEST_F(ExecutorTest, submitToFront) {
     ASSERT_EQ(order.back(), 2);
 }
 
+TEST_F(ExecutorTest, test_executionOrderEqualToSubmitOrder) {
+    WaitEvent waitSetUp;
+    executor.submit([&waitSetUp] { waitSetUp.wait(SHORT_TIMEOUT_MS); });
+
+    // submit a task which will block the executor
+    executor.submit([&waitSetUp] { waitSetUp.wait(SHORT_TIMEOUT_MS); });
+
+    std::list<int> order;
+    std::list<int> expectedOrder = {1, 2, 3};
+    for (auto& value : expectedOrder) {
+        // submit tasks in the expected order.
+        executor.submit([&order, value] { order.push_back(value); });
+    }
+
+    // unblock the executor
+    waitSetUp.wakeUp();
+
+    // wait for all tasks to complete
+    executor.waitForSubmittedTasks();
+
+    // verify execution order
+    ASSERT_EQ(order, expectedOrder);
+}
+
 /// Used by @c futureWaitsForTaskCleanup delay and timestamp the time of lambda parameter destruction.
 struct SlowDestructor {
     /// Constructor.
@@ -193,43 +216,41 @@ struct SlowDestructor {
      * Boolean indicating destruction is completed (if != nullptr).  Mutable so that a lambda can write to it in a
      * SlowDestructor parameter that is captured by value.
      */
-    mutable std::atomic<bool> * cleanedUp;
-
+    mutable std::atomic<bool>* cleanedUp;
 };
 
 /// This test verifies that the executor waits to fulfill its promise until after the task is cleaned up.
-TEST_F(ExecutorTest, futureWaitsForTaskCleanup) {
+TEST_F(ExecutorTest, test_futureWaitsForTaskCleanup) {
     std::atomic<bool> cleanedUp(false);
     SlowDestructor slowDestructor;
 
     // Submit a lambda to execute which captures a parameter by value that is slow to destruct.
-    executor.submit(
-        [slowDestructor, &cleanedUp] {
+    executor
+        .submit([slowDestructor, &cleanedUp] {
             // Update the captured copy of slowDestructor so that it will delay destruction and update the cleanedUp
             // flag.
             slowDestructor.cleanedUp = &cleanedUp;
         }
-        // wait for the promise to be fulfilled.
-    ).wait();
+                // wait for the promise to be fulfilled.
+                )
+        .wait();
 
     ASSERT_TRUE(cleanedUp);
 }
 
 /// This test verifies that the shutdown function completes the current task and does not accept new tasks.
-TEST_F(ExecutorTest, shutdown) {
+TEST_F(ExecutorTest, test_shutdown) {
     std::atomic<bool> ready(false);
     std::atomic<bool> blocked(false);
 
     // submit a task which will block the executor and then sleep briefly
-    auto done = executor.submit(
-        [&] {
-            blocked = true;
-            while (!ready) {
-                std::this_thread::yield();
-            }
-            std::this_thread::sleep_for(SHORT_TIMEOUT_MS);
+    auto done = executor.submit([&] {
+        blocked = true;
+        while (!ready) {
+            std::this_thread::yield();
         }
-    );
+        std::this_thread::sleep_for(SHORT_TIMEOUT_MS);
+    });
 
     // wait for it to block
     while (!blocked) {
@@ -253,8 +274,49 @@ TEST_F(ExecutorTest, shutdown) {
     ASSERT_FALSE(rejected.valid());
 }
 
-} // namespace test
-} // namespace threading
-} // namespace avsCommon
-} // namespace utils
-} // namespace alexaClientSDK
+/// Test that calling submit after shutdown will fail the job.
+TEST_F(ExecutorTest, test_pushAfterExecutordownFail) {
+    executor.shutdown();
+    ASSERT_TRUE(executor.isShutdown());
+
+    EXPECT_FALSE(executor.submit([] {}).valid());
+    EXPECT_FALSE(executor.submitToFront([] {}).valid());
+}
+
+/// Test that shutdown cancel jobs in the queue.
+TEST_F(ExecutorTest, test_shutdownCancelJob) {
+    bool executed = false;
+    WaitEvent waitSetUp, waitJobStart;
+    std::future<void> jobToDropResult;
+
+    // Job that should be cancelled and never run.
+    auto jobToDrop = [&executed] { executed = true; };
+
+    // Job used to validate that jobToDrop return value becomes available (but invalid).
+    auto jobToWaitDrop = [&jobToDropResult, &waitSetUp, &waitJobStart] {
+        waitJobStart.wakeUp();
+        waitSetUp.wait(SHORT_TIMEOUT_MS);
+        jobToDropResult.wait_for(SHORT_TIMEOUT_MS);
+    };
+
+    // 1st job waits for setup to be done then wait for the second job to be cancelled.
+    executor.submit(jobToWaitDrop);
+
+    // 2nd job that should never run. When cancelled, its return will become available.
+    jobToDropResult = executor.submit(jobToDrop);
+
+    // Wake up first job and wait for it to start running.
+    waitSetUp.wakeUp();
+    waitJobStart.wait();
+
+    // Shutdown should cancel enqueued jobs and wait for the ongoing job.
+    executor.shutdown();
+
+    // Executed should still be false.
+    EXPECT_FALSE(executed);
+}
+}  // namespace test
+}  // namespace threading
+}  // namespace utils
+}  // namespace avsCommon
+}  // namespace alexaClientSDK

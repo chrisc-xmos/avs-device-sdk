@@ -1,7 +1,5 @@
 /*
- * AbstractKeywordDetecorTest.cpp
- *
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -36,14 +34,14 @@ using ::testing::_;
 /// A test observer that mocks out the KeyWordObserverInterface##onKeyWordDetected() call.
 class MockKeyWordObserver : public avsCommon::sdkInterfaces::KeyWordObserverInterface {
 public:
-    MOCK_METHOD4(
-        onKeyWordDetected, 
+    MOCK_METHOD5(
+        onKeyWordDetected,
         void(
             std::shared_ptr<avsCommon::avs::AudioInputStream> stream,
             std::string keyword,
             avsCommon::avs::AudioInputStream::Index beginIndex,
-            avsCommon::avs::AudioInputStream::Index endIndex)
-        );
+            avsCommon::avs::AudioInputStream::Index endIndex,
+            std::shared_ptr<const std::vector<char>> KWDMetadata));
 };
 
 /// A test observer that mocks out the KeyWordDetectorStateObserverInterface##onStateChanged() call.
@@ -51,9 +49,8 @@ class MockStateObserver : public avsCommon::sdkInterfaces::KeyWordDetectorStateO
 public:
     MOCK_METHOD1(
         onStateChanged,
-        void(
-            avsCommon::sdkInterfaces::KeyWordDetectorStateObserverInterface::KeyWordDetectorState keyWordDetectorState)
-        );
+        void(avsCommon::sdkInterfaces::KeyWordDetectorStateObserverInterface::KeyWordDetectorState
+                 keyWordDetectorState));
 };
 
 /**
@@ -74,7 +71,7 @@ public:
      * @param state The state to notify observers of.
      */
     void sendStateChangeCallObservers(
-            avsCommon::sdkInterfaces::KeyWordDetectorStateObserverInterface::KeyWordDetectorState state) {
+        avsCommon::sdkInterfaces::KeyWordDetectorStateObserverInterface::KeyWordDetectorState state) {
         notifyKeyWordDetectorStateObservers(state);
     };
 };
@@ -96,100 +93,84 @@ protected:
     }
 };
 
-TEST_F(AbstractKeyWordDetectorTest, testAddKeyWordObserver) {
+TEST_F(AbstractKeyWordDetectorTest, test_addKeyWordObserver) {
     detector->addKeyWordObserver(keyWordObserver1);
 
-    EXPECT_CALL(*keyWordObserver1, onKeyWordDetected(_, _, _, _))
-        .Times(1);
+    EXPECT_CALL(*keyWordObserver1, onKeyWordDetected(_, _, _, _, _)).Times(1);
     detector->sendKeyWordCallToObservers();
 }
 
-TEST_F(AbstractKeyWordDetectorTest, testAddMultipleKeyWordObserver) {
+TEST_F(AbstractKeyWordDetectorTest, test_addMultipleKeyWordObserver) {
     detector->addKeyWordObserver(keyWordObserver1);
     detector->addKeyWordObserver(keyWordObserver2);
 
-    EXPECT_CALL(*keyWordObserver1, onKeyWordDetected(_, _, _, _))
-        .Times(1);
-    EXPECT_CALL(*keyWordObserver2, onKeyWordDetected(_, _, _, _))
-        .Times(1);
+    EXPECT_CALL(*keyWordObserver1, onKeyWordDetected(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*keyWordObserver2, onKeyWordDetected(_, _, _, _, _)).Times(1);
     detector->sendKeyWordCallToObservers();
 }
 
-TEST_F(AbstractKeyWordDetectorTest, testRemoveKeyWordObserver) {
+TEST_F(AbstractKeyWordDetectorTest, test_removeKeyWordObserver) {
     detector->addKeyWordObserver(keyWordObserver1);
     detector->addKeyWordObserver(keyWordObserver2);
 
-    EXPECT_CALL(*keyWordObserver1, onKeyWordDetected(_, _, _, _))
-        .Times(1);
-    EXPECT_CALL(*keyWordObserver2, onKeyWordDetected(_, _, _, _))
-        .Times(1);
+    EXPECT_CALL(*keyWordObserver1, onKeyWordDetected(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*keyWordObserver2, onKeyWordDetected(_, _, _, _, _)).Times(1);
     detector->sendKeyWordCallToObservers();
 
     detector->removeKeyWordObserver(keyWordObserver1);
 
-    EXPECT_CALL(*keyWordObserver1, onKeyWordDetected(_, _, _, _))
-        .Times(0);
-    EXPECT_CALL(*keyWordObserver2, onKeyWordDetected(_, _, _, _))
-        .Times(1);
+    EXPECT_CALL(*keyWordObserver1, onKeyWordDetected(_, _, _, _, _)).Times(0);
+    EXPECT_CALL(*keyWordObserver2, onKeyWordDetected(_, _, _, _, _)).Times(1);
     detector->sendKeyWordCallToObservers();
 }
 
-TEST_F(AbstractKeyWordDetectorTest, testAddStateObserver) {
+TEST_F(AbstractKeyWordDetectorTest, test_addStateObserver) {
     detector->addKeyWordDetectorStateObserver(stateObserver1);
 
-    EXPECT_CALL(*stateObserver1, onStateChanged(_))
-        .Times(1);
+    EXPECT_CALL(*stateObserver1, onStateChanged(_)).Times(1);
     detector->sendStateChangeCallObservers(
         avsCommon::sdkInterfaces::KeyWordDetectorStateObserverInterface::KeyWordDetectorState::ACTIVE);
 }
 
-TEST_F(AbstractKeyWordDetectorTest, testAddMultipleStateObservers) {
+TEST_F(AbstractKeyWordDetectorTest, test_addMultipleStateObservers) {
     detector->addKeyWordDetectorStateObserver(stateObserver1);
     detector->addKeyWordDetectorStateObserver(stateObserver2);
 
-    EXPECT_CALL(*stateObserver1, onStateChanged(_))
-        .Times(1);
-    EXPECT_CALL(*stateObserver2, onStateChanged(_))
-        .Times(1);
+    EXPECT_CALL(*stateObserver1, onStateChanged(_)).Times(1);
+    EXPECT_CALL(*stateObserver2, onStateChanged(_)).Times(1);
     detector->sendStateChangeCallObservers(
         avsCommon::sdkInterfaces::KeyWordDetectorStateObserverInterface::KeyWordDetectorState::ACTIVE);
 }
 
-TEST_F(AbstractKeyWordDetectorTest, testRemoveStateObserver) {
+TEST_F(AbstractKeyWordDetectorTest, test_removeStateObserver) {
     detector->addKeyWordDetectorStateObserver(stateObserver1);
     detector->addKeyWordDetectorStateObserver(stateObserver2);
 
-    EXPECT_CALL(*stateObserver1, onStateChanged(_))
-        .Times(1);
-    EXPECT_CALL(*stateObserver2, onStateChanged(_))
-        .Times(1);
+    EXPECT_CALL(*stateObserver1, onStateChanged(_)).Times(1);
+    EXPECT_CALL(*stateObserver2, onStateChanged(_)).Times(1);
     detector->sendStateChangeCallObservers(
         avsCommon::sdkInterfaces::KeyWordDetectorStateObserverInterface::KeyWordDetectorState::ACTIVE);
 
     detector->removeKeyWordDetectorStateObserver(stateObserver1);
 
-    EXPECT_CALL(*stateObserver1, onStateChanged(_))
-        .Times(0);
-    EXPECT_CALL(*stateObserver2, onStateChanged(_))
-        .Times(1);
+    EXPECT_CALL(*stateObserver1, onStateChanged(_)).Times(0);
+    EXPECT_CALL(*stateObserver2, onStateChanged(_)).Times(1);
     detector->sendStateChangeCallObservers(
         avsCommon::sdkInterfaces::KeyWordDetectorStateObserverInterface::KeyWordDetectorState::STREAM_CLOSED);
 }
 
-TEST_F(AbstractKeyWordDetectorTest, testObserversDontGetNotifiedOfSameStateTwice) {
+TEST_F(AbstractKeyWordDetectorTest, test_observersDontGetNotifiedOfSameStateTwice) {
     detector->addKeyWordDetectorStateObserver(stateObserver1);
 
-    EXPECT_CALL(*stateObserver1, onStateChanged(_))
-        .Times(1);
+    EXPECT_CALL(*stateObserver1, onStateChanged(_)).Times(1);
     detector->sendStateChangeCallObservers(
         avsCommon::sdkInterfaces::KeyWordDetectorStateObserverInterface::KeyWordDetectorState::ACTIVE);
 
-    EXPECT_CALL(*stateObserver1, onStateChanged(_))
-        .Times(0);
+    EXPECT_CALL(*stateObserver1, onStateChanged(_)).Times(0);
     detector->sendStateChangeCallObservers(
         avsCommon::sdkInterfaces::KeyWordDetectorStateObserverInterface::KeyWordDetectorState::ACTIVE);
 }
 
-} // namespace test
-} // namespace kwd
-} // namespace alexaClientSDK
+}  // namespace test
+}  // namespace kwd
+}  // namespace alexaClientSDK

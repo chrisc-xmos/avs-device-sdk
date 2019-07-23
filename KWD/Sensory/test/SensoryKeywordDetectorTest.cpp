@@ -1,7 +1,5 @@
 /*
- * SensoryKeyWordDetectorTest.cpp
- *
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -84,10 +82,12 @@ std::vector<AudioInputStream::Index> BEGIN_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA
 std::vector<AudioInputStream::Index> END_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE = {20960, 51312};
 
 /// The compatible encoding for Sensory.
-static const avsCommon::utils::AudioFormat::Encoding COMPATIBLE_ENCODING = avsCommon::utils::AudioFormat::Encoding::LPCM;
+static const avsCommon::utils::AudioFormat::Encoding COMPATIBLE_ENCODING =
+    avsCommon::utils::AudioFormat::Encoding::LPCM;
 
 /// The compatible endianness for Sensory.
-static const avsCommon::utils::AudioFormat::Endianness COMPATIBLE_ENDIANNESS = avsCommon::utils::AudioFormat::Endianness::LITTLE;
+static const avsCommon::utils::AudioFormat::Endianness COMPATIBLE_ENDIANNESS =
+    avsCommon::utils::AudioFormat::Endianness::LITTLE;
 
 /// The compatible sample rate for Sensory.
 static const unsigned int COMPATIBLE_SAMPLE_RATE = 16000;
@@ -113,10 +113,11 @@ public:
 
     /// Implementation of the KeyWordObserverInterface##onKeyWordDetected() call.
     void onKeyWordDetected(
-            std::shared_ptr<AudioInputStream> stream,
-            std::string keyword,
-            AudioInputStream::Index beginIndex,
-            AudioInputStream::Index endIndex) {
+        std::shared_ptr<AudioInputStream> stream,
+        std::string keyword,
+        AudioInputStream::Index beginIndex,
+        AudioInputStream::Index endIndex,
+        std::shared_ptr<const std::vector<char>> KWDMetadata) {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_detectionResults.push_back({beginIndex, endIndex, keyword});
         m_detectionOccurred.notify_one();
@@ -130,9 +131,10 @@ public:
      * @return The detection results that actually occurred.
      */
     std::vector<detectionResult> waitForNDetections(
-            unsigned int numDetectionsExpected, std::chrono::milliseconds timeout) {
+        unsigned int numDetectionsExpected,
+        std::chrono::milliseconds timeout) {
         std::unique_lock<std::mutex> lock(m_mutex);
-        m_detectionOccurred.wait_for(lock, timeout, [this, numDetectionsExpected] () {
+        m_detectionOccurred.wait_for(lock, timeout, [this, numDetectionsExpected]() {
             return m_detectionResults.size() == numDetectionsExpected;
         });
         return m_detectionResults;
@@ -155,9 +157,9 @@ public:
     /**
      * Constructor.
      */
-    testStateObserver() : 
-        m_state(KeyWordDetectorStateObserverInterface::KeyWordDetectorState::STREAM_CLOSED), 
-        m_stateChangeOccurred{false} {
+    testStateObserver() :
+            m_state(KeyWordDetectorStateObserverInterface::KeyWordDetectorState::STREAM_CLOSED),
+            m_stateChangeOccurred{false} {
     }
 
     /// Implementation of the KeyWordDetectorStateObserverInterface##onStateChanged() call.
@@ -176,11 +178,10 @@ public:
      * @return Returns the state of the observer.
      */
     KeyWordDetectorStateObserverInterface::KeyWordDetectorState waitForStateChange(
-            std::chrono::milliseconds timeout, bool* stateChanged) {
+        std::chrono::milliseconds timeout,
+        bool* stateChanged) {
         std::unique_lock<std::mutex> lock(m_mutex);
-        bool success = m_stateChanged.wait_for(lock, timeout, [this] () {
-            return m_stateChangeOccurred;
-        });
+        bool success = m_stateChanged.wait_for(lock, timeout, [this]() { return m_stateChangeOccurred; });
 
         if (!success) {
             *stateChanged = false;
@@ -190,6 +191,7 @@ public:
         }
         return m_state;
     }
+
 private:
     /// The state of the observer.
     KeyWordDetectorStateObserverInterface::KeyWordDetectorState m_state;
@@ -205,7 +207,7 @@ private:
 };
 
 class SensoryKeywordTest : public ::testing::Test {
-    protected:
+protected:
     /**
      * Reads audio from a WAV file.
      *
@@ -213,7 +215,7 @@ class SensoryKeywordTest : public ::testing::Test {
      * @param [out] errorOccurred Lets users know if any errors occurred while parsing the file.
      * @return A vector of int16_t containing the raw audio data of the WAV file without the RIFF header.
      */
-    std::vector<int16_t> readAudioFromFile(const std::string &fileName, bool* errorOccurred) {
+    std::vector<int16_t> readAudioFromFile(const std::string& fileName, bool* errorOccurred) {
         const int RIFF_HEADER_SIZE = 44;
 
         std::ifstream inputFile(fileName.c_str(), std::ifstream::binary);
@@ -240,9 +242,9 @@ class SensoryKeywordTest : public ::testing::Test {
 
         std::vector<int16_t> retVal(numSamples, 0);
 
-        inputFile.read((char *)&retVal[0], numSamples * 2);
+        inputFile.read((char*)&retVal[0], numSamples * 2);
 
-        if (inputFile.gcount() != numSamples*2) {
+        if (inputFile.gcount() != numSamples * 2) {
             std::cout << "Error reading audio file" << std::endl;
             if (errorOccurred) {
                 *errorOccurred = true;
@@ -267,16 +269,16 @@ class SensoryKeywordTest : public ::testing::Test {
      * @return @c true if the result is present within the margin and @c false otherwise.
      */
     bool isResultPresent(
-            std::vector<testKeyWordObserver::detectionResult>& results,
-            AudioInputStream::Index expectedBeginIndex,
-            AudioInputStream::Index expectedEndIndex,
-            const std::string& expectedKeyword) {
-            AudioInputStream::Index highBoundOfBeginIndex = expectedBeginIndex + MARGIN_IN_SAMPLES;
+        std::vector<testKeyWordObserver::detectionResult>& results,
+        AudioInputStream::Index expectedBeginIndex,
+        AudioInputStream::Index expectedEndIndex,
+        const std::string& expectedKeyword) {
+        AudioInputStream::Index highBoundOfBeginIndex = expectedBeginIndex + MARGIN_IN_SAMPLES;
         AudioInputStream::Index lowBoundOfBeginIndex = expectedBeginIndex - MARGIN_IN_SAMPLES;
         AudioInputStream::Index highBoundOfEndIndex = expectedEndIndex + MARGIN_IN_SAMPLES;
         AudioInputStream::Index lowBoundOfEndIndex = expectedEndIndex - MARGIN_IN_SAMPLES;
         for (auto result : results) {
-            if (result.endIndex <= highBoundOfEndIndex && result.endIndex >= lowBoundOfEndIndex && 
+            if (result.endIndex <= highBoundOfEndIndex && result.endIndex >= lowBoundOfEndIndex &&
                 result.beginIndex <= highBoundOfBeginIndex && result.beginIndex >= lowBoundOfBeginIndex &&
                 expectedKeyword == result.keyword) {
                 return true;
@@ -306,51 +308,42 @@ class SensoryKeywordTest : public ::testing::Test {
         compatibleAudioFormat.endianness = COMPATIBLE_ENDIANNESS;
         compatibleAudioFormat.encoding = COMPATIBLE_ENCODING;
 
-
-        std::ifstream filePresent((inputsDirPath+MODEL_FILE).c_str());
-        ASSERT_TRUE(filePresent.good()) << 
-        "Unable to find " + inputsDirPath+MODEL_FILE << ". Please place model file within this location.";
+        std::ifstream filePresent((inputsDirPath + MODEL_FILE).c_str());
+        ASSERT_TRUE(filePresent.good()) << "Unable to find " + inputsDirPath + MODEL_FILE
+                                        << ". Please place model file within this location.";
 
         modelFilePath = inputsDirPath + MODEL_FILE;
     }
 };
 
 /// Tests that we don't get back a valid detector if an invalid stream is passed in.
-TEST_F(SensoryKeywordTest, invalidStream) {
+TEST_F(SensoryKeywordTest, test_invalidStream) {
     auto detector = SensoryKeywordDetector::create(
-            nullptr, 
-            compatibleAudioFormat, 
-            {keyWordObserver1}, 
-            {stateObserver}, 
-            modelFilePath);
+        nullptr, compatibleAudioFormat, {keyWordObserver1}, {stateObserver}, modelFilePath);
     ASSERT_FALSE(detector);
 }
 
 /// Tests that we don't get back a valid detector if an invalid endianness is passed in.
-TEST_F(SensoryKeywordTest, incompatibleEndianness) {
+TEST_F(SensoryKeywordTest, test_incompatibleEndianness) {
     auto rawBuffer = std::make_shared<avsCommon::avs::AudioInputStream::Buffer>(500000);
     auto uniqueSds = avsCommon::avs::AudioInputStream::create(rawBuffer, 2, 1);
     std::shared_ptr<AudioInputStream> sds = std::move(uniqueSds);
 
     compatibleAudioFormat.endianness = AudioFormat::Endianness::BIG;
 
-    auto detector = SensoryKeywordDetector::create(
-            sds, 
-            compatibleAudioFormat, 
-            {keyWordObserver1}, 
-            {stateObserver}, 
-            modelFilePath);
+    auto detector =
+        SensoryKeywordDetector::create(sds, compatibleAudioFormat, {keyWordObserver1}, {stateObserver}, modelFilePath);
     ASSERT_FALSE(detector);
 }
 
 /// Tests that we get back the expected number of keywords for the four_alexa.wav file for one keyword observer.
-TEST_F(SensoryKeywordTest, getExpectedNumberOfDetectionsInFourAlexasAudioFileForOneObserver) {
+TEST_F(SensoryKeywordTest, test_getExpectedNumberOfDetectionsInFourAlexasAudioFileForOneObserver) {
     auto fourAlexasBuffer = std::make_shared<avsCommon::avs::AudioInputStream::Buffer>(500000);
     auto fourAlexasSds = avsCommon::avs::AudioInputStream::create(fourAlexasBuffer, 2, 1);
     std::shared_ptr<AudioInputStream> fourAlexasAudioBuffer = std::move(fourAlexasSds);
 
-    std::unique_ptr<AudioInputStream::Writer> fourAlexasAudioBufferWriter = fourAlexasAudioBuffer->createWriter(
-            avsCommon::avs::AudioInputStream::Writer::Policy::NONBLOCKABLE);
+    std::unique_ptr<AudioInputStream::Writer> fourAlexasAudioBufferWriter =
+        fourAlexasAudioBuffer->createWriter(avsCommon::avs::AudioInputStream::Writer::Policy::NONBLOCKABLE);
 
     std::string audioFilePath = inputsDirPath + FOUR_ALEXAS_AUDIO_FILE;
     bool error;
@@ -360,35 +353,30 @@ TEST_F(SensoryKeywordTest, getExpectedNumberOfDetectionsInFourAlexasAudioFileFor
     fourAlexasAudioBufferWriter->write(audioData.data(), audioData.size());
 
     auto detector = SensoryKeywordDetector::create(
-            fourAlexasAudioBuffer, 
-            compatibleAudioFormat, 
-            {keyWordObserver1}, 
-            {stateObserver}, 
-            modelFilePath);
+        fourAlexasAudioBuffer, compatibleAudioFormat, {keyWordObserver1}, {stateObserver}, modelFilePath);
     ASSERT_TRUE(detector);
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    auto detections = keyWordObserver1->waitForNDetections(
-            END_INDICES_OF_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE.size(), DEFAULT_TIMEOUT);
+    auto detections =
+        keyWordObserver1->waitForNDetections(END_INDICES_OF_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE.size(), DEFAULT_TIMEOUT);
     ASSERT_EQ(detections.size(), NUM_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE);
 
-    for (unsigned int i=0; i<END_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.size(); ++i) {
+    for (unsigned int i = 0; i < END_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.size(); ++i) {
         ASSERT_TRUE(isResultPresent(
-                detections, 
-                BEGIN_INDICES_OF_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE.at(i), 
-                END_INDICES_OF_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE.at(i), 
-                KEYWORD)
-        );
+            detections,
+            BEGIN_INDICES_OF_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE.at(i),
+            END_INDICES_OF_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE.at(i),
+            KEYWORD));
     }
 }
 
 /// Tests that we get back the expected number of keywords for the four_alexa.wav file for two keyword observers.
-TEST_F(SensoryKeywordTest, getExpectedNumberOfDetectionsInFourAlexasAudioFileForTwoObservers) {
+TEST_F(SensoryKeywordTest, test_getExpectedNumberOfDetectionsInFourAlexasAudioFileForTwoObservers) {
     auto fourAlexasBuffer = std::make_shared<avsCommon::avs::AudioInputStream::Buffer>(500000);
     auto fourAlexasSds = avsCommon::avs::AudioInputStream::create(fourAlexasBuffer, 2, 1);
     std::shared_ptr<AudioInputStream> fourAlexasAudioBuffer = std::move(fourAlexasSds);
 
-    std::unique_ptr<AudioInputStream::Writer> fourAlexasAudioBufferWriter = fourAlexasAudioBuffer->createWriter(
-            avsCommon::avs::AudioInputStream::Writer::Policy::NONBLOCKABLE);
+    std::unique_ptr<AudioInputStream::Writer> fourAlexasAudioBufferWriter =
+        fourAlexasAudioBuffer->createWriter(avsCommon::avs::AudioInputStream::Writer::Policy::NONBLOCKABLE);
 
     std::string audioFilePath = inputsDirPath + FOUR_ALEXAS_AUDIO_FILE;
     bool error;
@@ -398,51 +386,46 @@ TEST_F(SensoryKeywordTest, getExpectedNumberOfDetectionsInFourAlexasAudioFileFor
     fourAlexasAudioBufferWriter->write(audioData.data(), audioData.size());
 
     auto detector = SensoryKeywordDetector::create(
-            fourAlexasAudioBuffer, 
-            compatibleAudioFormat, 
-            {keyWordObserver1, keyWordObserver2}, 
-            {stateObserver}, 
-            modelFilePath);
+        fourAlexasAudioBuffer,
+        compatibleAudioFormat,
+        {keyWordObserver1, keyWordObserver2},
+        {stateObserver},
+        modelFilePath);
     ASSERT_TRUE(detector);
-    auto detections = keyWordObserver1->waitForNDetections(
-            NUM_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE, DEFAULT_TIMEOUT);
+    auto detections = keyWordObserver1->waitForNDetections(NUM_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE, DEFAULT_TIMEOUT);
     ASSERT_EQ(detections.size(), NUM_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE);
 
-    for (unsigned int i=0; i<END_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.size(); ++i) {
+    for (unsigned int i = 0; i < END_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.size(); ++i) {
         ASSERT_TRUE(isResultPresent(
-                detections, 
-                BEGIN_INDICES_OF_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE.at(i), 
-                END_INDICES_OF_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE.at(i), 
-                KEYWORD)
-        );
+            detections,
+            BEGIN_INDICES_OF_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE.at(i),
+            END_INDICES_OF_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE.at(i),
+            KEYWORD));
     }
 
-    detections = keyWordObserver2->waitForNDetections(
-        NUM_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE, DEFAULT_TIMEOUT);
+    detections = keyWordObserver2->waitForNDetections(NUM_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE, DEFAULT_TIMEOUT);
     ASSERT_EQ(detections.size(), NUM_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE);
 
-    for (unsigned int i=0; i<END_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.size(); ++i) {
+    for (unsigned int i = 0; i < END_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.size(); ++i) {
         ASSERT_TRUE(isResultPresent(
-                detections, 
-                BEGIN_INDICES_OF_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE.at(i), 
-                END_INDICES_OF_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE.at(i), 
-                KEYWORD)
-        );
+            detections,
+            BEGIN_INDICES_OF_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE.at(i),
+            END_INDICES_OF_ALEXAS_IN_FOUR_ALEXAS_AUDIO_FILE.at(i),
+            KEYWORD));
     }
 }
 
 /**
- * Tests that we get back the expected number of keywords for the alexa_stop_alexa_joke.wav file for one keyword 
+ * Tests that we get back the expected number of keywords for the alexa_stop_alexa_joke.wav file for one keyword
  * observer.
  */
-TEST_F(SensoryKeywordTest, getExpectedNumberOfDetectionsInAlexaStopAlexaJokeAudioFileForOneObserver) {
+TEST_F(SensoryKeywordTest, test_getExpectedNumberOfDetectionsInAlexaStopAlexaJokeAudioFileForOneObserver) {
     auto alexaStopAlexaJokeBuffer = std::make_shared<avsCommon::avs::AudioInputStream::Buffer>(500000);
     auto alexaStopAlexaJokeSds = avsCommon::avs::AudioInputStream::create(alexaStopAlexaJokeBuffer, 2, 1);
     std::shared_ptr<AudioInputStream> alexaStopAlexaJokeAudioBuffer = std::move(alexaStopAlexaJokeSds);
 
-    std::unique_ptr<AudioInputStream::Writer> alexaStopAlexaJokeAudioBufferWriter = 
-            alexaStopAlexaJokeAudioBuffer->createWriter(
-                    avsCommon::avs::AudioInputStream::Writer::Policy::NONBLOCKABLE);
+    std::unique_ptr<AudioInputStream::Writer> alexaStopAlexaJokeAudioBufferWriter =
+        alexaStopAlexaJokeAudioBuffer->createWriter(avsCommon::avs::AudioInputStream::Writer::Policy::NONBLOCKABLE);
 
     std::string audioFilePath = inputsDirPath + ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE;
     bool error;
@@ -452,37 +435,31 @@ TEST_F(SensoryKeywordTest, getExpectedNumberOfDetectionsInAlexaStopAlexaJokeAudi
     alexaStopAlexaJokeAudioBufferWriter->write(audioData.data(), audioData.size());
 
     auto detector = SensoryKeywordDetector::create(
-            alexaStopAlexaJokeAudioBuffer, 
-            compatibleAudioFormat, 
-            {keyWordObserver1}, 
-            {stateObserver}, 
-            modelFilePath);
+        alexaStopAlexaJokeAudioBuffer, compatibleAudioFormat, {keyWordObserver1}, {stateObserver}, modelFilePath);
     ASSERT_TRUE(detector);
 
-    auto detections = keyWordObserver1->waitForNDetections(
-            NUM_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE, DEFAULT_TIMEOUT);
+    auto detections =
+        keyWordObserver1->waitForNDetections(NUM_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE, DEFAULT_TIMEOUT);
 
     ASSERT_EQ(detections.size(), NUM_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE);
 
-    for (unsigned int i=0; i<END_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.size(); ++i) {
+    for (unsigned int i = 0; i < END_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.size(); ++i) {
         ASSERT_TRUE(isResultPresent(
-                detections, 
-                BEGIN_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.at(i), 
-                END_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.at(i), 
-                KEYWORD)
-        );
+            detections,
+            BEGIN_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.at(i),
+            END_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.at(i),
+            KEYWORD));
     }
 }
 
 /// Tests that the detector state changes to ACTIVE when the detector is initialized properly.
-TEST_F(SensoryKeywordTest, getActiveState) {
+TEST_F(SensoryKeywordTest, test_getActiveState) {
     auto alexaStopAlexaJokeBuffer = std::make_shared<avsCommon::avs::AudioInputStream::Buffer>(500000);
     auto alexaStopAlexaJokeSds = avsCommon::avs::AudioInputStream::create(alexaStopAlexaJokeBuffer, 2, 1);
     std::shared_ptr<AudioInputStream> alexaStopAlexaJokeAudioBuffer = std::move(alexaStopAlexaJokeSds);
 
-    std::unique_ptr<AudioInputStream::Writer> alexaStopAlexaJokeAudioBufferWriter = 
-            alexaStopAlexaJokeAudioBuffer->createWriter(
-                    avsCommon::avs::AudioInputStream::Writer::Policy::NONBLOCKABLE);
+    std::unique_ptr<AudioInputStream::Writer> alexaStopAlexaJokeAudioBufferWriter =
+        alexaStopAlexaJokeAudioBuffer->createWriter(avsCommon::avs::AudioInputStream::Writer::Policy::NONBLOCKABLE);
 
     std::string audioFilePath = inputsDirPath + ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE;
     bool error;
@@ -492,15 +469,11 @@ TEST_F(SensoryKeywordTest, getActiveState) {
     alexaStopAlexaJokeAudioBufferWriter->write(audioData.data(), audioData.size());
 
     auto detector = SensoryKeywordDetector::create(
-            alexaStopAlexaJokeAudioBuffer, 
-            compatibleAudioFormat, 
-            {keyWordObserver1}, 
-            {stateObserver}, 
-            modelFilePath);
+        alexaStopAlexaJokeAudioBuffer, compatibleAudioFormat, {keyWordObserver1}, {stateObserver}, modelFilePath);
     ASSERT_TRUE(detector);
     bool stateChanged = false;
-    KeyWordDetectorStateObserverInterface::KeyWordDetectorState stateReceived = stateObserver->waitForStateChange(
-            DEFAULT_TIMEOUT, &stateChanged);
+    KeyWordDetectorStateObserverInterface::KeyWordDetectorState stateReceived =
+        stateObserver->waitForStateChange(DEFAULT_TIMEOUT, &stateChanged);
     ASSERT_TRUE(stateChanged);
     ASSERT_EQ(stateReceived, KeyWordDetectorStateObserverInterface::KeyWordDetectorState::ACTIVE);
 }
@@ -509,14 +482,13 @@ TEST_F(SensoryKeywordTest, getActiveState) {
  * Tests that the stream is closed and that the detector state changes to STREAM_CLOSED when we close the only writer
  * of the SDS passed in and all keyword detections have occurred.
  */
-TEST_F(SensoryKeywordTest, getStreamClosedState) {
+TEST_F(SensoryKeywordTest, test_getStreamClosedState) {
     auto alexaStopAlexaJokeBuffer = std::make_shared<avsCommon::avs::AudioInputStream::Buffer>(500000);
     auto alexaStopAlexaJokeSds = avsCommon::avs::AudioInputStream::create(alexaStopAlexaJokeBuffer, 2, 1);
     std::shared_ptr<AudioInputStream> alexaStopAlexaJokeAudioBuffer = std::move(alexaStopAlexaJokeSds);
 
-    std::unique_ptr<AudioInputStream::Writer> alexaStopAlexaJokeAudioBufferWriter = 
-            alexaStopAlexaJokeAudioBuffer->createWriter(
-                    avsCommon::avs::AudioInputStream::Writer::Policy::NONBLOCKABLE);
+    std::unique_ptr<AudioInputStream::Writer> alexaStopAlexaJokeAudioBufferWriter =
+        alexaStopAlexaJokeAudioBuffer->createWriter(avsCommon::avs::AudioInputStream::Writer::Policy::NONBLOCKABLE);
 
     std::string audioFilePath = inputsDirPath + ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE;
     bool error;
@@ -526,87 +498,76 @@ TEST_F(SensoryKeywordTest, getStreamClosedState) {
     alexaStopAlexaJokeAudioBufferWriter->write(audioData.data(), audioData.size());
 
     auto detector = SensoryKeywordDetector::create(
-            alexaStopAlexaJokeAudioBuffer, 
-            compatibleAudioFormat, 
-            {keyWordObserver1}, 
-            {stateObserver}, 
-            modelFilePath);
+        alexaStopAlexaJokeAudioBuffer, compatibleAudioFormat, {keyWordObserver1}, {stateObserver}, modelFilePath);
     ASSERT_TRUE(detector);
 
     // so that when we close the writer, we know for sure that the reader will be closed
-    auto detections = keyWordObserver1->waitForNDetections(
-            NUM_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE, DEFAULT_TIMEOUT);
+    auto detections =
+        keyWordObserver1->waitForNDetections(NUM_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE, DEFAULT_TIMEOUT);
     ASSERT_EQ(detections.size(), NUM_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE);
 
     bool stateChanged = false;
-    KeyWordDetectorStateObserverInterface::KeyWordDetectorState stateReceived = stateObserver->waitForStateChange(
-            DEFAULT_TIMEOUT, &stateChanged);
+    KeyWordDetectorStateObserverInterface::KeyWordDetectorState stateReceived =
+        stateObserver->waitForStateChange(DEFAULT_TIMEOUT, &stateChanged);
     ASSERT_TRUE(stateChanged);
     ASSERT_EQ(stateReceived, KeyWordDetectorStateObserverInterface::KeyWordDetectorState::ACTIVE);
 
     alexaStopAlexaJokeAudioBufferWriter->close();
     stateChanged = false;
-    stateReceived = stateObserver->waitForStateChange(
-            DEFAULT_TIMEOUT, &stateChanged);
+    stateReceived = stateObserver->waitForStateChange(DEFAULT_TIMEOUT, &stateChanged);
     ASSERT_TRUE(stateChanged);
     ASSERT_EQ(stateReceived, KeyWordDetectorStateObserverInterface::KeyWordDetectorState::STREAM_CLOSED);
 }
 
 /**
- * Tests that we get back the expected number of keywords for the alexa_stop_alexa_joke.wav file for one keyword 
+ * Tests that we get back the expected number of keywords for the alexa_stop_alexa_joke.wav file for one keyword
  * observer even when SDS has other data prior to the audio file in it. This tests that the reference point that the
  * Sensory wrapper uses is working as expected.
  */
-TEST_F(SensoryKeywordTest, getExpectedNumberOfDetectionsInAlexaStopAlexaJokeAudioFileWithRandomDataAtBeginning) {
+TEST_F(SensoryKeywordTest, test_getExpectedNumberOfDetectionsInAlexaStopAlexaJokeAudioFileWithRandomDataAtBeginning) {
     auto alexaStopAlexaJokeBuffer = std::make_shared<avsCommon::avs::AudioInputStream::Buffer>(500000);
     auto alexaStopAlexaJokeSds = avsCommon::avs::AudioInputStream::create(alexaStopAlexaJokeBuffer, 2, 1);
     std::shared_ptr<AudioInputStream> alexaStopAlexaJokeAudioBuffer = std::move(alexaStopAlexaJokeSds);
 
-    std::unique_ptr<AudioInputStream::Writer> alexaStopAlexaJokeAudioBufferWriter = 
-            alexaStopAlexaJokeAudioBuffer->createWriter(
-                    avsCommon::avs::AudioInputStream::Writer::Policy::NONBLOCKABLE);
+    std::unique_ptr<AudioInputStream::Writer> alexaStopAlexaJokeAudioBufferWriter =
+        alexaStopAlexaJokeAudioBuffer->createWriter(avsCommon::avs::AudioInputStream::Writer::Policy::NONBLOCKABLE);
 
     std::string audioFilePath = inputsDirPath + ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE;
     bool error;
     std::vector<int16_t> audioData = readAudioFromFile(audioFilePath, &error);
     ASSERT_FALSE(error);
 
-    std::vector<int16_t> randomData(5000,0);
+    std::vector<int16_t> randomData(5000, 0);
     alexaStopAlexaJokeAudioBufferWriter->write(randomData.data(), randomData.size());
 
     auto detector = SensoryKeywordDetector::create(
-            alexaStopAlexaJokeAudioBuffer, 
-            compatibleAudioFormat, 
-            {keyWordObserver1}, 
-            {stateObserver}, 
-            modelFilePath);
+        alexaStopAlexaJokeAudioBuffer, compatibleAudioFormat, {keyWordObserver1}, {stateObserver}, modelFilePath);
     ASSERT_TRUE(detector);
 
     alexaStopAlexaJokeAudioBufferWriter->write(audioData.data(), audioData.size());
 
-    auto detections = keyWordObserver1->waitForNDetections(
-            NUM_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE, DEFAULT_TIMEOUT);
+    auto detections =
+        keyWordObserver1->waitForNDetections(NUM_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE, DEFAULT_TIMEOUT);
 
     ASSERT_EQ(detections.size(), NUM_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE);
 
     for (unsigned int i = 0; i < END_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.size(); ++i) {
         ASSERT_TRUE(isResultPresent(
-                detections, 
-                BEGIN_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.at(i) + randomData.size(), 
-                END_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.at(i) + randomData.size(), 
-                KEYWORD)
-        );
+            detections,
+            BEGIN_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.at(i) + randomData.size(),
+            END_INDICES_OF_ALEXAS_IN_ALEXA_STOP_ALEXA_JOKE_AUDIO_FILE.at(i) + randomData.size(),
+            KEYWORD));
     }
 }
 
-} // namespace test
-} // namespace kwd
-} // namespace alexaClientSDK
+}  // namespace test
+}  // namespace kwd
+}  // namespace alexaClientSDK
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     if (argc < 2) {
-        std::cerr << "USAGE: SensoryKeywordDetectorTest <path_to_inputs_folder>" << std::endl;
+        std::cerr << "USAGE: " << std::string(argv[0]) << " <path_to_inputs_folder>" << std::endl;
         return 1;
     } else {
         alexaClientSDK::kwd::test::inputsDirPath = std::string(argv[1]);

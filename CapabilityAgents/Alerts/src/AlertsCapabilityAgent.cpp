@@ -1,7 +1,5 @@
 /*
- * AlertsCapabilityAgent.cpp
- *
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -18,9 +16,13 @@
 #include "Alerts/AlertsCapabilityAgent.h"
 
 #include "Alerts/Alarm.h"
+#include "Alerts/Reminder.h"
 #include "Alerts/Storage/SQLiteAlertStorage.h"
 #include "Alerts/Timer.h"
+#include "AVSCommon/AVS/CapabilityConfiguration.h"
 #include <AVSCommon/AVS/MessageRequest.h>
+#include <AVSCommon/AVS/SpeakerConstants/SpeakerConstants.h>
+#include <AVSCommon/Utils/File/FileUtils.h>
 #include <AVSCommon/Utils/JSON/JSONUtils.h>
 #include <AVSCommon/Utils/Timing/TimeUtils.h>
 
@@ -28,6 +30,9 @@
 #include <rapidjson/writer.h>
 
 #include <fstream>
+#include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace alexaClientSDK {
 namespace capabilityAgents {
@@ -35,32 +40,39 @@ namespace alerts {
 
 using namespace avsCommon::avs;
 using namespace avsCommon::utils::configuration;
+using namespace avsCommon::utils::file;
 using namespace avsCommon::utils::json::jsonUtils;
 using namespace avsCommon::utils::logger;
 using namespace avsCommon::utils::timing;
 using namespace avsCommon::sdkInterfaces;
+using namespace certifiedSender;
 using namespace rapidjson;
+
+/// Alerts capability constants
+/// Alerts interface type
+static const std::string ALERTS_CAPABILITY_INTERFACE_TYPE = "AlexaInterface";
+/// Alerts interface name
+static const std::string ALERTS_CAPABILITY_INTERFACE_NAME = "Alerts";
+/// Alerts interface version
+static const std::string ALERTS_CAPABILITY_INTERFACE_VERSION = "1.3";
 
 /// The value for Type which we need for json parsing.
 static const std::string KEY_TYPE = "type";
+
+// ==== Directives ===
 
 /// The value of the SetAlert Directive.
 static const std::string DIRECTIVE_NAME_SET_ALERT = "SetAlert";
 /// The value of the DeleteAlert Directive.
 static const std::string DIRECTIVE_NAME_DELETE_ALERT = "DeleteAlert";
+/// The value of the DeleteAlerts Directive.
+static const std::string DIRECTIVE_NAME_DELETE_ALERTS = "DeleteAlerts";
+/// The value of the SetVolume Directive.
+static const std::string DIRECTIVE_NAME_SET_VOLUME = "SetVolume";
+/// The value of the AdjustVolume Directive.
+static const std::string DIRECTIVE_NAME_ADJUST_VOLUME = "AdjustVolume";
 
-/// The key in our config file to find the root of settings for this Capability Agent.
-static const std::string ALERTS_CAPABILITY_AGENT_CONFIGURATION_ROOT_KEY = "alertsCapabilityAgent";
-/// The key in our config file to find the database file path.
-static const std::string ALERTS_CAPABILITY_AGENT_DB_FILE_PATH_KEY = "databaseFilePath";
-/// The key in our config file to find the alarm default sound file path.
-static const std::string ALERTS_CAPABILITY_AGENT_ALARM_AUDIO_FILE_PATH_KEY = "alarmSoundFilePath";
-/// The key in our config file to find the alarm short sound file path.
-static const std::string ALERTS_CAPABILITY_AGENT_ALARM_SHORT_AUDIO_FILE_PATH_KEY = "alarmShortSoundFilePath";
-/// The key in our config file to find the timer default sound file path.
-static const std::string ALERTS_CAPABILITY_AGENT_TIMER_AUDIO_FILE_PATH_KEY = "timerSoundFilePath";
-/// The key in our config file to find the timer short sound file path.
-static const std::string ALERTS_CAPABILITY_AGENT_TIMER_SHORT_AUDIO_FILE_PATH_KEY = "timerShortSoundFilePath";
+// ==== Events ===
 
 /// The value of the SetAlertSucceeded Event name.
 static const std::string SET_ALERT_SUCCEEDED_EVENT_NAME = "SetAlertSucceeded";
@@ -78,7 +90,25 @@ static const std::string ALERT_STOPPED_EVENT_NAME = "AlertStopped";
 static const std::string ALERT_ENTERED_FOREGROUND_EVENT_NAME = "AlertEnteredForeground";
 /// The value of the AlertEnteredBackground Event name.
 static const std::string ALERT_ENTERED_BACKGROUND_EVENT_NAME = "AlertEnteredBackground";
-/// The value of the Alerts Context Namespace.
+/// The value of the VolumeChanged Event name.
+static const std::string ALERT_VOLUME_CHANGED_EVENT_NAME = "VolumeChanged";
+/// The value of the DeleteAlertsSucceeded Event name.
+static const std::string ALERT_DELETE_ALERTS_SUCCEEDED_EVENT_NAME = "DeleteAlertsSucceeded";
+/// The value of the DeleteAlertsFailed Event name.
+static const std::string ALERT_DELETE_ALERTS_FAILED_EVENT_NAME = "DeleteAlertsFailed";
+
+// ==== Other constants ===
+
+/// The value of the event payload key for a single token.
+static const std::string EVENT_PAYLOAD_TOKEN_KEY = "token";
+/// The value of the event payload key for multiple tokens.
+static const std::string EVENT_PAYLOAD_TOKENS_KEY = "tokens";
+/// The value of Token text in a Directive we may receive.
+static const std::string DIRECTIVE_PAYLOAD_TOKEN_KEY = "token";
+/// The value of Token list key in a Directive we may receive.
+static const std::string DIRECTIVE_PAYLOAD_TOKENS_KEY = "tokens";
+/// The value of volume key in a Directive we may receive.
+static const std::string DIRECTIVE_PAYLOAD_VOLUME = "volume";
 
 static const std::string AVS_CONTEXT_HEADER_NAMESPACE_VALUE_KEY = "Alerts";
 /// The value of the Alerts Context Names.
@@ -93,11 +123,9 @@ static const std::string AVS_CONTEXT_ALERT_TOKEN_KEY = "token";
 static const std::string AVS_CONTEXT_ALERT_TYPE_KEY = "type";
 /// The value of the Alerts Context scheduled time key.
 static const std::string AVS_CONTEXT_ALERT_SCHEDULED_TIME_KEY = "scheduledTime";
-/// The value of Token text in an Event we may send.
 
-static const std::string EVENT_PAYLOAD_TOKEN_KEY = "token";
-/// The value of Token text in an Directive we may receive.
-static const std::string DIRECTIVE_PAYLOAD_TOKEN_KEY = "token";
+/// The value of the volume state info volume key.
+static const std::string AVS_PAYLOAD_VOLUME_KEY = "volume";
 
 /// An empty dialogRequestId.
 static const std::string EMPTY_DIALOG_REQUEST_ID = "";
@@ -105,11 +133,15 @@ static const std::string EMPTY_DIALOG_REQUEST_ID = "";
 /// The namespace for this capability agent.
 static const std::string NAMESPACE = "Alerts";
 /// The SetAlert directive signature.
-static const avsCommon::avs::NamespaceAndName SET_ALERT{NAMESPACE, "SetAlert"};
+static const avsCommon::avs::NamespaceAndName SET_ALERT{NAMESPACE, DIRECTIVE_NAME_SET_ALERT};
 /// The DeleteAlert directive signature.
-static const avsCommon::avs::NamespaceAndName DELETE_ALERT{NAMESPACE, "DeleteAlert"};
-/// The activityId string used with @c FocusManager by @c AlertsCapabilityAgent.
-static const std::string ACTIVITY_ID = "Alerts.AlertStarted";
+static const avsCommon::avs::NamespaceAndName DELETE_ALERT{NAMESPACE, DIRECTIVE_NAME_DELETE_ALERT};
+/// The DeleteAlerts directive signature.
+static const avsCommon::avs::NamespaceAndName DELETE_ALERTS{NAMESPACE, DIRECTIVE_NAME_DELETE_ALERTS};
+/// The SetVolume directive signature.
+static const avsCommon::avs::NamespaceAndName SET_VOLUME{NAMESPACE, DIRECTIVE_NAME_SET_VOLUME};
+/// The AdjustVolume directive signature.
+static const avsCommon::avs::NamespaceAndName ADJUST_VOLUME{NAMESPACE, DIRECTIVE_NAME_ADJUST_VOLUME};
 
 /// String to identify log entries originating from this file.
 static const std::string TAG("AlertsCapabilityAgent");
@@ -122,65 +154,31 @@ static const std::string TAG("AlertsCapabilityAgent");
 #define LX(event) alexaClientSDK::avsCommon::utils::logger::LogEntry(TAG, event)
 
 /**
- * A utility function to query if a file exists.
+ * Creates the alerts capability configuration.
  *
- * TODO - make this more portable and dependable.
- * https://issues.labcollab.net/browse/ACSDK-380
- *
- * @param filePath The path to the file being queried about.
- * @return Whether the file exists and is accessible.
+ * @return The alerts capability configuration.
  */
-static bool fileExists(const std::string &fileName) {
-    std::ifstream is(fileName);
-    return is.good();
-}
-
-/**
- * Utility function to tell if an Alert should be rendered, or discarded.
- *
- * @param alert The Alert being considered.
- * @param currentUnixTime The current time, expressed in Unix Epoch time.
- * @return Whether the alert is past-due, or should be scheduled for rendering.
- */
-static bool isAlertPastDue(const std::shared_ptr<Alert> &alert, int64_t currentUnixTime) {
-    int64_t cutoffTime = currentUnixTime - (ALERT_PAST_DUE_CUTOFF_MINUTES.count() * 60);
-
-    return (alert->getScheduledTime_Unix() < cutoffTime);
-}
+static std::shared_ptr<avsCommon::avs::CapabilityConfiguration> getAlertsCapabilityConfiguration();
 
 /**
  * Utility function to construct a rapidjson array of alert details, representing all the alerts currently managed.
  *
- * @param alerts All the alerts being managed by this Capability Agent.
- * @param activeAlert The currently active alert, if any.
+ * @param alertsInfo All the alerts being managed by this Capability Agent.
  * @param allocator The rapidjson allocator, required for the results of this function to be mergable with other
  * rapidjson::Value objects.
  * @return The rapidjson::Value representing the array.
  */
 static rapidjson::Value buildAllAlertsContext(
-        const std::set<std::shared_ptr<Alert>, Alert::TimeComparator> &alerts,
-        std::shared_ptr<Alert> activeAlert,
-        Document::AllocatorType &allocator) {
+    const std::vector<Alert::ContextInfo>& alertsInfo,
+    Document::AllocatorType& allocator) {
     rapidjson::Value alertArray(rapidjson::kArrayType);
 
-    for (auto &alert : alerts) {
+    for (const auto& info : alertsInfo) {
         rapidjson::Value alertJson;
         alertJson.SetObject();
-        alertJson.AddMember(StringRef(AVS_CONTEXT_ALERT_TOKEN_KEY), alert->getToken(), allocator);
-        alertJson.AddMember(StringRef(AVS_CONTEXT_ALERT_TYPE_KEY), alert->getTypeName(), allocator);
-        alertJson.AddMember(StringRef(AVS_CONTEXT_ALERT_SCHEDULED_TIME_KEY), alert->getScheduledTime_ISO_8601(),
-                allocator);
-
-        alertArray.PushBack(alertJson, allocator);
-    }
-
-    if (activeAlert) {
-        rapidjson::Value alertJson;
-        alertJson.SetObject();
-        alertJson.AddMember(StringRef(AVS_CONTEXT_ALERT_TOKEN_KEY), activeAlert->getToken(), allocator);
-        alertJson.AddMember(StringRef(AVS_CONTEXT_ALERT_TYPE_KEY), activeAlert->getTypeName(), allocator);
-        alertJson.AddMember(StringRef(AVS_CONTEXT_ALERT_SCHEDULED_TIME_KEY), activeAlert->getScheduledTime_ISO_8601(),
-                allocator);
+        alertJson.AddMember(StringRef(AVS_CONTEXT_ALERT_TOKEN_KEY), info.token, allocator);
+        alertJson.AddMember(StringRef(AVS_CONTEXT_ALERT_TYPE_KEY), info.type, allocator);
+        alertJson.AddMember(StringRef(AVS_CONTEXT_ALERT_SCHEDULED_TIME_KEY), info.scheduledTime_ISO_8601, allocator);
 
         alertArray.PushBack(alertJson, allocator);
     }
@@ -191,22 +189,23 @@ static rapidjson::Value buildAllAlertsContext(
 /**
  * Utility function to construct a rapidjson array of alert details, representing all the currently active alerts.
  *
- * @param activeAlert The currently active alert, which may be nullptr if no alert is active.
+ * @param alertsInfo The currently active alert, which may be nullptr if no alert is active.
  * @param allocator The rapidjson allocator, required for the results of this function to be mergable with other
  * rapidjson::Value objects.
  * @return The rapidjson::Value representing the array.
  */
-static rapidjson::Value buildActiveAlertsContext(std::shared_ptr<Alert> activeAlert,
-                                                 Document::AllocatorType &allocator) {
+static rapidjson::Value buildActiveAlertsContext(
+    const std::vector<Alert::ContextInfo>& alertsInfo,
+    Document::AllocatorType& allocator) {
     rapidjson::Value alertArray(rapidjson::kArrayType);
 
-    if (activeAlert) {
+    if (!alertsInfo.empty()) {
+        auto& info = alertsInfo[0];
         rapidjson::Value alertJson;
         alertJson.SetObject();
-        alertJson.AddMember(StringRef(AVS_CONTEXT_ALERT_TOKEN_KEY), activeAlert->getToken(), allocator);
-        alertJson.AddMember(StringRef(AVS_CONTEXT_ALERT_TYPE_KEY), activeAlert->getTypeName(), allocator);
-        alertJson.AddMember(StringRef(AVS_CONTEXT_ALERT_SCHEDULED_TIME_KEY), activeAlert->getScheduledTime_ISO_8601(),
-                allocator);
+        alertJson.AddMember(StringRef(AVS_CONTEXT_ALERT_TOKEN_KEY), info.token, allocator);
+        alertJson.AddMember(StringRef(AVS_CONTEXT_ALERT_TYPE_KEY), info.type, allocator);
+        alertJson.AddMember(StringRef(AVS_CONTEXT_ALERT_SCHEDULED_TIME_KEY), info.scheduledTime_ISO_8601, allocator);
 
         alertArray.PushBack(alertJson, allocator);
     }
@@ -214,480 +213,211 @@ static rapidjson::Value buildActiveAlertsContext(std::shared_ptr<Alert> activeAl
     return alertArray;
 }
 
-/**
- * Utility function to create a Context string for the given alert inputs.
- *
- * @param alerts All the alerts being managed by this Capability Agent.
- * @param activeAlert The currently active alert, which may be nullptr if no alert is active.
- * @return The Context string for the given alert inputs.
- */
-static std::string getContextString(const std::set<std::shared_ptr<Alert>, Alert::TimeComparator> &alerts,
-                                    const std::shared_ptr<Alert> &activeAlert) {
-    rapidjson::Document state(kObjectType);
-    rapidjson::Document::AllocatorType &alloc = state.GetAllocator();
-
-    auto allAlertsJsonValue = buildAllAlertsContext(alerts, activeAlert, alloc);
-    auto activeAlertsJsonValue = buildActiveAlertsContext(activeAlert, alloc);
-
-    state.AddMember(StringRef(AVS_CONTEXT_ALL_ALERTS_TOKEN_KEY), allAlertsJsonValue, alloc);
-    state.AddMember(StringRef(AVS_CONTEXT_ACTIVE_ALERTS_TOKEN_KEY), activeAlertsJsonValue, alloc);
-
-    rapidjson::StringBuffer buffer;
-    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
-    if (!state.Accept(writer)) {
-        ACSDK_ERROR(LX("getContextStringFailed").d("reason", "writerRefusedJsonObject"));
-        return "";
-    }
-
-    return buffer.GetString();
-}
-
 std::shared_ptr<AlertsCapabilityAgent> AlertsCapabilityAgent::create(
-        std::shared_ptr<avsCommon::sdkInterfaces::MessageSenderInterface> messageSender,
-        std::shared_ptr<avsCommon::sdkInterfaces::FocusManagerInterface> focusManager,
-        std::shared_ptr<avsCommon::sdkInterfaces::ContextManagerInterface> contextManager,
-        std::shared_ptr<avsCommon::sdkInterfaces::ExceptionEncounteredSenderInterface> exceptionEncounteredSender,
-        std::shared_ptr<renderer::RendererInterface> renderer,
-        std::shared_ptr<storage::AlertStorageInterface> alertStorage,
-        std::shared_ptr<AlertObserverInterface> observer) {
-
+    std::shared_ptr<avsCommon::sdkInterfaces::MessageSenderInterface> messageSender,
+    std::shared_ptr<avsCommon::sdkInterfaces::AVSConnectionManagerInterface> connectionManager,
+    std::shared_ptr<certifiedSender::CertifiedSender> certifiedMessageSender,
+    std::shared_ptr<avsCommon::sdkInterfaces::FocusManagerInterface> focusManager,
+    std::shared_ptr<avsCommon::sdkInterfaces::SpeakerManagerInterface> speakerManager,
+    std::shared_ptr<avsCommon::sdkInterfaces::ContextManagerInterface> contextManager,
+    std::shared_ptr<avsCommon::sdkInterfaces::ExceptionEncounteredSenderInterface> exceptionEncounteredSender,
+    std::shared_ptr<storage::AlertStorageInterface> alertStorage,
+    std::shared_ptr<avsCommon::sdkInterfaces::audio::AlertsAudioFactoryInterface> alertsAudioFactory,
+    std::shared_ptr<renderer::RendererInterface> alertRenderer,
+    std::shared_ptr<registrationManager::CustomerDataManager> dataManager) {
     auto alertsCA = std::shared_ptr<AlertsCapabilityAgent>(new AlertsCapabilityAgent(
-            messageSender, focusManager, contextManager,
-            exceptionEncounteredSender, renderer, alertStorage, observer));
+        messageSender,
+        certifiedMessageSender,
+        focusManager,
+        speakerManager,
+        contextManager,
+        exceptionEncounteredSender,
+        alertStorage,
+        alertsAudioFactory,
+        alertRenderer,
+        dataManager));
 
     if (!alertsCA->initialize()) {
-        ACSDK_ERROR(LX("createFailed").d("reason", "Initializion error."));
+        ACSDK_ERROR(LX("createFailed").d("reason", "Initialization error."));
         return nullptr;
     }
+
+    focusManager->addObserver(alertsCA);
+    connectionManager->addConnectionStatusObserver(alertsCA);
+    speakerManager->addSpeakerManagerObserver(alertsCA);
 
     return alertsCA;
 }
 
 avsCommon::avs::DirectiveHandlerConfiguration AlertsCapabilityAgent::getConfiguration() const {
+    auto audioNonBlockingPolicy = BlockingPolicy(BlockingPolicy::MEDIUM_AUDIO, false);
+    auto neitherNonBlockingPolicy = BlockingPolicy(BlockingPolicy::MEDIUMS_NONE, false);
+
     avsCommon::avs::DirectiveHandlerConfiguration configuration;
-    configuration[SET_ALERT] = avsCommon::avs::BlockingPolicy::NON_BLOCKING;
-    configuration[DELETE_ALERT] = avsCommon::avs::BlockingPolicy::NON_BLOCKING;
+    configuration[SET_ALERT] = neitherNonBlockingPolicy;
+    configuration[DELETE_ALERT] = neitherNonBlockingPolicy;
+    configuration[DELETE_ALERTS] = neitherNonBlockingPolicy;
+    configuration[SET_VOLUME] = audioNonBlockingPolicy;
+    configuration[ADJUST_VOLUME] = audioNonBlockingPolicy;
     return configuration;
 }
 
 void AlertsCapabilityAgent::handleDirectiveImmediately(std::shared_ptr<avsCommon::avs::AVSDirective> directive) {
+    if (!directive) {
+        ACSDK_ERROR(LX("handleDirectiveImmediatelyFailed").d("reason", "directive is nullptr."));
+    }
     auto info = createDirectiveInfo(directive, nullptr);
-    m_caExecutor.submit([this, info]() { executeHandleDirectiveImmediately(info); });
+    m_executor.submit([this, info]() { executeHandleDirectiveImmediately(info); });
 }
 
 void AlertsCapabilityAgent::preHandleDirective(std::shared_ptr<DirectiveInfo> info) {
-    m_caExecutor.submit([this, info]() { executeHandleDirectiveImmediately(info); });
+    // intentional no-op.
 }
 
 void AlertsCapabilityAgent::handleDirective(std::shared_ptr<DirectiveInfo> info) {
+    if (!info) {
+        ACSDK_ERROR(LX("handleDirectiveFailed").d("reason", "info is nullptr."));
+    }
+    m_executor.submit([this, info]() { executeHandleDirectiveImmediately(info); });
 }
 
 void AlertsCapabilityAgent::cancelDirective(std::shared_ptr<DirectiveInfo> info) {
+    // intentional no-op.
 }
 
 void AlertsCapabilityAgent::onDeregistered() {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    deactivateActiveAlertHelper(Alert::StopReason::SHUTDOWN);
-    m_scheduledAlerts.clear();
-}
-
-void AlertsCapabilityAgent::enableSendEvents() {
-    m_sendEventsEnabled = true;
-    filterPastDueAlerts();
-}
-
-void AlertsCapabilityAgent::disableSendEvents() {
-    m_sendEventsEnabled = false;
+    // intentional no-op.
 }
 
 void AlertsCapabilityAgent::onConnectionStatusChanged(const Status status, const ChangedReason reason) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_isConnected = (Status::POST_CONNECTED == status);
+    m_executor.submit([this, status, reason]() { executeOnConnectionStatusChanged(status, reason); });
 }
 
 void AlertsCapabilityAgent::onFocusChanged(avsCommon::avs::FocusState focusState) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-
-    if (m_focusState == focusState) {
-        return;
-    }
-
-    m_focusState = focusState;
-
-    switch (m_focusState) {
-        case FocusState::FOREGROUND:
-            if (m_activeAlert) {
-                m_activeAlert->setFocusState(m_focusState);
-
-                std::string token = m_activeAlert->getToken();
-
-                m_caExecutor.submit(
-                        [this, token]() { executeSendAlertFocusChangeEvent(token, FocusState::FOREGROUND); }
-                );
-
-                m_caExecutor.submit([this, token]() {
-                    executeNotifyObserver(token, AlertObserverInterface::State::FOCUS_ENTERED_FOREGROUND);
-                });
-
-            } else {
-                activateNextAlertLocked();
-            }
-            break;
-
-        case FocusState::BACKGROUND:
-            if (m_activeAlert) {
-                m_activeAlert->setFocusState(m_focusState);
-
-                std::string token = m_activeAlert->getToken();
-
-                m_caExecutor.submit(
-                        [this, token]() { executeSendAlertFocusChangeEvent(token, FocusState::BACKGROUND); }
-                );
-
-                m_caExecutor.submit([this, token]() {
-                    executeNotifyObserver(token, AlertObserverInterface::State::FOCUS_ENTERED_BACKGROUND);
-                });
-
-            } else {
-                activateNextAlertLocked();
-            }
-            break;
-
-        case FocusState::NONE:
-            deactivateActiveAlertHelper(Alert::StopReason::LOCAL_STOP);
-            break;
-    }
+    ACSDK_DEBUG9(LX("onFocusChanged").d("focusState", focusState));
+    m_executor.submit([this, focusState]() { executeOnFocusChanged(focusState); });
 }
 
-void AlertsCapabilityAgent::executeSendAlertFocusChangeEvent(
-        const std::string &alertToken, avsCommon::avs::FocusState focusState) {
-    switch (focusState) {
-        case FocusState::FOREGROUND:
-            sendEvent(ALERT_ENTERED_FOREGROUND_EVENT_NAME, alertToken);
-            break;
-
-        case FocusState::BACKGROUND:
-            sendEvent(ALERT_ENTERED_BACKGROUND_EVENT_NAME, alertToken);
-            break;
-
-        case FocusState::NONE:
-            // no-op
-            break;
-    }
+void AlertsCapabilityAgent::onFocusChanged(const std::string& channelName, avsCommon::avs::FocusState newFocus) {
+    m_executor.submit([this, channelName, newFocus]() { executeOnFocusManagerFocusChanged(channelName, newFocus); });
 }
 
-void AlertsCapabilityAgent::executeNotifyObserver(
-        const std::string &alertToken, AlertObserverInterface::State state, const std::string &reason) {
-    if (m_observer) {
-        m_observer->onAlertStateChange(alertToken, state, reason);
-    }
-}
-
-void AlertsCapabilityAgent::onAlertStateChange(const std::string &alertToken, AlertObserverInterface::State state,
-                                               const std::string &reason) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-
-    if (!m_activeAlert || alertToken != m_activeAlert->getToken()) {
-        ACSDK_ERROR(LX("onAlertStateChangeFailed").m("state change for alert which is not active."));
-        return;
-    }
-
-    std::string alertTokenCopy = alertToken;
-    m_caExecutor.submit([this, alertTokenCopy, state, reason]() {
-        executeNotifyObserver(alertTokenCopy, state, reason);
+void AlertsCapabilityAgent::onAlertStateChange(
+    const std::string& alertToken,
+    const std::string& alertType,
+    AlertObserverInterface::State state,
+    const std::string& reason) {
+    ACSDK_DEBUG9(LX("onAlertStateChange")
+                     .d("alertToken", alertToken)
+                     .d("alertType", alertType)
+                     .d("state", state)
+                     .d("reason", reason));
+    m_executor.submit([this, alertToken, alertType, state, reason]() {
+        executeOnAlertStateChange(alertToken, alertType, state, reason);
     });
-
-    switch (state) {
-
-        case AlertObserverInterface::State::STARTED:
-            if (Alert::State::ACTIVATING == m_activeAlert->getState()) {
-                sendEvent(ALERT_STARTED_EVENT_NAME, m_activeAlert->getToken());
-                m_activeAlert->setStateActive();
-                m_alertStorage->modify(m_activeAlert);
-
-                updateContextManagerLocked();
-            }
-            break;
-
-        case AlertObserverInterface::State::SNOOZED:
-            m_activeAlert->reset();
-            m_alertStorage->modify(m_activeAlert);
-            m_scheduledAlerts.insert(m_activeAlert);
-            m_activeAlert.reset();
-            m_alertRenderer->setObserver(nullptr);
-            releaseChannel();
-
-            updateContextManagerLocked();
-            scheduleNextAlertForRendering();
-
-            break;
-
-        case AlertObserverInterface::State::STOPPED:
-            // NOTE: Only send AlertStopped Event if local stop.  Otherwise this is done during DeleteAlert handling.
-            if (Alert::StopReason::LOCAL_STOP == m_activeAlert->getStopReason()) {
-                sendEvent(ALERT_STOPPED_EVENT_NAME, m_activeAlert->getToken());
-            }
-
-            m_alertStorage->erase(m_activeAlert);
-            m_activeAlert.reset();
-            m_alertRenderer->setObserver(nullptr);
-            releaseChannel();
-
-            updateContextManagerLocked();
-            scheduleNextAlertForRendering();
-
-            break;
-
-        case AlertObserverInterface::State::COMPLETED:
-            sendEvent(ALERT_STOPPED_EVENT_NAME, m_activeAlert->getToken());
-            m_alertStorage->erase(m_activeAlert);
-            m_activeAlert.reset();
-            m_alertRenderer->setObserver(nullptr);
-            releaseChannel();
-
-            updateContextManagerLocked();
-            scheduleNextAlertForRendering();
-
-            break;
-
-        case AlertObserverInterface::State::ERROR:
-            // let's at least get the next alert set up for rendering.
-            m_alertStorage->erase(m_activeAlert);
-            m_activeAlert.reset();
-            m_alertRenderer->setObserver(nullptr);
-            releaseChannel();
-
-            updateContextManagerLocked();
-            scheduleNextAlertForRendering();
-
-            break;
-
-        case AlertObserverInterface::State::PAST_DUE:
-        case AlertObserverInterface::State::FOCUS_ENTERED_FOREGROUND:
-        case AlertObserverInterface::State::FOCUS_ENTERED_BACKGROUND:
-            // no-op
-            break;
-    }
 }
 
-void AlertsCapabilityAgent::onLocalStop() {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    deactivateActiveAlertHelper(Alert::StopReason::LOCAL_STOP);
+void AlertsCapabilityAgent::addObserver(std::shared_ptr<AlertObserverInterface> observer) {
+    if (!observer) {
+        ACSDK_ERROR(LX("addObserverFailed").d("reason", "nullObserver"));
+        return;
+    }
+
+    m_executor.submit([this, observer]() { executeAddObserver(observer); });
+}
+
+void AlertsCapabilityAgent::removeObserver(std::shared_ptr<AlertObserverInterface> observer) {
+    if (!observer) {
+        ACSDK_ERROR(LX("removeObserverFailed").d("reason", "nullObserver"));
+        return;
+    }
+
+    m_executor.submit([this, observer]() { executeRemoveObserver(observer); });
 }
 
 void AlertsCapabilityAgent::removeAllAlerts() {
-    std::unique_lock<std::mutex> lock(m_mutex);
-    deactivateActiveAlertHelper(Alert::StopReason::SHUTDOWN);
-    m_scheduledAlerts.clear();
+    m_executor.submit([this]() { executeRemoveAllAlerts(); });
+}
 
-    lock.unlock();
-
-    m_alertStorage->clearDatabase();
+void AlertsCapabilityAgent::onLocalStop() {
+    ACSDK_DEBUG9(LX("onLocalStop"));
+    m_executor.submitToFront([this]() { executeOnLocalStop(); });
 }
 
 AlertsCapabilityAgent::AlertsCapabilityAgent(
-        std::shared_ptr<avsCommon::sdkInterfaces::MessageSenderInterface> messageSender,
-        std::shared_ptr<avsCommon::sdkInterfaces::FocusManagerInterface> focusManager,
-        std::shared_ptr<avsCommon::sdkInterfaces::ContextManagerInterface> contextManager,
-        std::shared_ptr<avsCommon::sdkInterfaces::ExceptionEncounteredSenderInterface> exceptionEncounteredSender,
-        std::shared_ptr<renderer::RendererInterface> renderer,
-        std::shared_ptr<storage::AlertStorageInterface> alertStorage,
-        std::shared_ptr<AlertObserverInterface> observer)
-        : CapabilityAgent("Alerts", exceptionEncounteredSender),
-          RequiresShutdown("AlertsCapabilityAgent"),
-          m_messageSender{messageSender},
-          m_focusManager{focusManager},
-          m_contextManager{contextManager},
-          m_alertStorage{alertStorage},
-          m_alertRenderer{renderer},
-          m_isConnected{false}, m_sendEventsEnabled{false}, m_focusState{avsCommon::avs::FocusState::NONE},
-          m_observer{observer} {
+    std::shared_ptr<avsCommon::sdkInterfaces::MessageSenderInterface> messageSender,
+    std::shared_ptr<certifiedSender::CertifiedSender> certifiedMessageSender,
+    std::shared_ptr<avsCommon::sdkInterfaces::FocusManagerInterface> focusManager,
+    std::shared_ptr<avsCommon::sdkInterfaces::SpeakerManagerInterface> speakerManager,
+    std::shared_ptr<avsCommon::sdkInterfaces::ContextManagerInterface> contextManager,
+    std::shared_ptr<avsCommon::sdkInterfaces::ExceptionEncounteredSenderInterface> exceptionEncounteredSender,
+    std::shared_ptr<storage::AlertStorageInterface> alertStorage,
+    std::shared_ptr<avsCommon::sdkInterfaces::audio::AlertsAudioFactoryInterface> alertsAudioFactory,
+    std::shared_ptr<renderer::RendererInterface> alertRenderer,
+    std::shared_ptr<registrationManager::CustomerDataManager> dataManager) :
+        CapabilityAgent("Alerts", exceptionEncounteredSender),
+        RequiresShutdown("AlertsCapabilityAgent"),
+        CustomerDataHandler(dataManager),
+        m_messageSender{messageSender},
+        m_certifiedSender{certifiedMessageSender},
+        m_focusManager{focusManager},
+        m_speakerManager{speakerManager},
+        m_contextManager{contextManager},
+        m_isConnected{false},
+        m_alertScheduler{alertStorage, alertRenderer, ALERT_PAST_DUE_CUTOFF_MINUTES},
+        m_alertsAudioFactory{alertsAudioFactory},
+        m_contentChannelIsActive{false},
+        m_commsChannelIsActive{false},
+        m_alertIsSounding{false} {
+    m_capabilityConfigurations.insert(getAlertsCapabilityConfiguration());
+}
 
+std::shared_ptr<CapabilityConfiguration> getAlertsCapabilityConfiguration() {
+    std::unordered_map<std::string, std::string> configMap;
+    configMap.insert({CAPABILITY_INTERFACE_TYPE_KEY, ALERTS_CAPABILITY_INTERFACE_TYPE});
+    configMap.insert({CAPABILITY_INTERFACE_NAME_KEY, ALERTS_CAPABILITY_INTERFACE_NAME});
+    configMap.insert({CAPABILITY_INTERFACE_VERSION_KEY, ALERTS_CAPABILITY_INTERFACE_VERSION});
+
+    return std::make_shared<CapabilityConfiguration>(configMap);
 }
 
 void AlertsCapabilityAgent::doShutdown() {
+    m_executor.shutdown();
     releaseChannel();
-    m_scheduledAlertTimer.stop();
-    m_caExecutor.shutdown();
-    m_alertSchedulerExecutor.shutdown();
     m_messageSender.reset();
+    m_certifiedSender.reset();
     m_focusManager.reset();
     m_contextManager.reset();
-    m_alertStorage.reset();
-    m_alertRenderer.reset();
-    m_activeAlert.reset();
-    m_scheduledAlerts.clear();
-    m_pastDueAlerts.clear();
-    m_observer.reset();
+    m_observers.clear();
+    m_alertScheduler.shutdown();
 }
 
 bool AlertsCapabilityAgent::initialize() {
-    auto configurationRoot = ConfigurationNode::getRoot()[ALERTS_CAPABILITY_AGENT_CONFIGURATION_ROOT_KEY];
-    if (!configurationRoot) {
-        ACSDK_ERROR(LX("initializeFailed").m("could not load AlertsCapabilityAgent configuration root."));
-        return false;
-    }
-
-    if (!initializeDefaultSounds(configurationRoot)) {
-        ACSDK_ERROR(LX("initializeFailed").m("Could not initialize default sounds."));
-        return false;
-    }
-
-    if (!initializeAlerts(configurationRoot)) {
+    if (!initializeAlerts()) {
         ACSDK_ERROR(LX("initializeFailed").m("Could not initialize alerts."));
         return false;
     }
 
-    std::unique_lock<std::mutex> lock(m_mutex);
-    updateContextManagerLocked();
-    lock.unlock();
+    // Initialize stored value for AVS_ALERTS_VOLUME speaker settings
+    if (!getAlertVolumeSettings(&m_lastReportedSpeakerSettings)) {
+        return false;
+    }
 
-    scheduleNextAlertForRendering();
+    updateContextManager();
 
     return true;
 }
 
-bool AlertsCapabilityAgent::initializeDefaultSounds(const ConfigurationNode &configurationRoot) {
-    std::string alarmAudioFilePath;
-    std::string alarmShortAudioFilePath;
-    std::string timerAudioFilePath;
-    std::string timerShortAudioFilePath;
-
-    if (!configurationRoot.getString(ALERTS_CAPABILITY_AGENT_ALARM_AUDIO_FILE_PATH_KEY, &alarmAudioFilePath) ||
-        alarmAudioFilePath.empty()) {
-        ACSDK_ERROR(LX("initializeDefaultSoundsFailed").m("could not read alarm audio file path."));
-        return false;
-    }
-
-    if (!fileExists(alarmAudioFilePath)) {
-        ACSDK_ERROR(LX("initializeDefaultSoundsFailed").m("could not open alarm audio file."));
-        return false;
-    }
-
-    if (!configurationRoot.getString(ALERTS_CAPABILITY_AGENT_ALARM_SHORT_AUDIO_FILE_PATH_KEY, &alarmShortAudioFilePath)
-        || alarmShortAudioFilePath.empty()) {
-        ACSDK_ERROR(LX("initializeDefaultSoundsFailed").m("could not read alarm short audio file path."));
-        return false;
-    }
-
-    if (!fileExists(alarmAudioFilePath)) {
-        ACSDK_ERROR(LX("initializeDefaultSoundsFailed").m("could not open alarm short audio file."));
-        return false;
-    }
-
-    if (!configurationRoot.getString(ALERTS_CAPABILITY_AGENT_TIMER_AUDIO_FILE_PATH_KEY, &timerAudioFilePath) ||
-        timerAudioFilePath.empty()) {
-        ACSDK_ERROR(LX("initializeDefaultSoundsFailed").m("could not read timer audio file path."));
-        return false;
-    }
-
-    if (!fileExists(alarmAudioFilePath)) {
-        ACSDK_ERROR(LX("initializeDefaultSoundsFailed").m("could not open timer audio file."));
-        return false;
-    }
-
-    if (!configurationRoot.getString(ALERTS_CAPABILITY_AGENT_TIMER_SHORT_AUDIO_FILE_PATH_KEY, &timerShortAudioFilePath)
-        || timerShortAudioFilePath.empty()) {
-        ACSDK_ERROR(LX("initializeDefaultSoundsFailed").m("could not read timer short audio file path."));
-        return false;
-    }
-
-    if (!fileExists(alarmAudioFilePath)) {
-        ACSDK_ERROR(LX("initializeDefaultSoundsFailed").m("could not open timer short audio file."));
-        return false;
-    }
-
-    Alarm::setDefaultAudioFilePath(alarmAudioFilePath);
-    Alarm::setDefaultShortAudioFilePath(alarmShortAudioFilePath);
-
-    Timer::setDefaultAudioFilePath(timerAudioFilePath);
-    Timer::setDefaultShortAudioFilePath(timerShortAudioFilePath);
-
-    return true;
+bool AlertsCapabilityAgent::initializeAlerts() {
+    return m_alertScheduler.initialize(shared_from_this());
 }
 
-bool AlertsCapabilityAgent::initializeAlerts(const ConfigurationNode &configurationRoot) {
-    std::string sqliteFilePath;
-
-    if (!configurationRoot.getString(ALERTS_CAPABILITY_AGENT_DB_FILE_PATH_KEY, &sqliteFilePath) ||
-        sqliteFilePath.empty()) {
-        ACSDK_ERROR(LX("initializeAlertsFailed").m("could not load sqlite file path."));
-        return false;
-    }
-
-    if (!m_alertStorage->open(sqliteFilePath)) {
-        ACSDK_INFO(LX("initializeAlerts").m("database file does not exist.  Creating."));
-        if (!m_alertStorage->createDatabase(sqliteFilePath)) {
-            ACSDK_ERROR(LX("initializeAlertsFailed").m("Could not create database file."));
-            return false;
-        }
-    }
-
-    int64_t unixEpochNow;
-    if (!getCurrentUnixTime(&unixEpochNow)) {
-        ACSDK_ERROR(LX("initializeAlertsFailed").d("reason", "could not get current unix time."));
-        return false;
-    }
-
-    std::vector<std::shared_ptr<Alert>> alerts;
-    m_alertStorage->load(&alerts);
-
-    for (auto &alert : alerts) {
-        if (isAlertPastDue(alert, unixEpochNow)) {
-            m_pastDueAlerts.push_back(alert);
-        } else {
-            alert->setRenderer(m_alertRenderer);
-            alert->setObserver(this);
-
-            // if it was active when the system last powered down, then re-init the state to set
-            if (Alert::State::ACTIVE == alert->getState()) {
-                alert->reset();
-                m_alertStorage->modify(alert);
-            }
-
-            m_scheduledAlerts.insert(alert);
-        }
-    }
-
-    return true;
-}
-
-void AlertsCapabilityAgent::executeHandleDirectiveImmediately(std::shared_ptr<DirectiveInfo> info) {
-    auto &directive = info->directive;
-
-    rapidjson::Document payload;
-    payload.Parse(directive->getPayload());
-
-    if (payload.HasParseError()) {
-        std::string errorMessage = "Unable to parse payload";
-        ACSDK_ERROR(LX("executeHandleDirectiveImmediatelyFailed").m(errorMessage));
-        sendProcessingDirectiveException(directive, errorMessage);
-        return;
-    }
-
-    auto directiveName = directive->getName();
-    std::string alertToken;
-
-    if (DIRECTIVE_NAME_SET_ALERT == directiveName) {
-        if (handleSetAlert(directive, payload, &alertToken)) {
-            sendEvent(SET_ALERT_SUCCEEDED_EVENT_NAME, alertToken);
-        } else {
-            sendEvent(SET_ALERT_FAILED_EVENT_NAME, alertToken);
-        }
-    } else if (DIRECTIVE_NAME_DELETE_ALERT == directiveName) {
-        if (handleDeleteAlert(directive, payload, &alertToken)) {
-            sendEvent(DELETE_ALERT_SUCCEEDED_EVENT_NAME, alertToken);
-        } else {
-            sendEvent(DELETE_ALERT_FAILED_EVENT_NAME, alertToken);
-        }
-    }
-}
-
-bool AlertsCapabilityAgent::handleSetAlert(const std::shared_ptr<avsCommon::avs::AVSDirective> &directive,
-                                           const rapidjson::Document &payload,
-                                           std::string *alertToken) {
+bool AlertsCapabilityAgent::handleSetAlert(
+    const std::shared_ptr<avsCommon::avs::AVSDirective>& directive,
+    const rapidjson::Document& payload,
+    std::string* alertToken) {
+    ACSDK_DEBUG9(LX("handleSetAlert"));
     std::string alertType;
-
     if (!retrieveValue(payload, KEY_TYPE, &alertType)) {
         std::string errorMessage = "Alert type not specified for SetAlert";
         ACSDK_ERROR(LX("handleSetAlertFailed").m(errorMessage));
@@ -698,9 +428,12 @@ bool AlertsCapabilityAgent::handleSetAlert(const std::shared_ptr<avsCommon::avs:
     std::shared_ptr<Alert> parsedAlert;
 
     if (Alarm::TYPE_NAME == alertType) {
-        parsedAlert = std::make_shared<Alarm>();
+        parsedAlert = std::make_shared<Alarm>(m_alertsAudioFactory->alarmDefault(), m_alertsAudioFactory->alarmShort());
     } else if (Timer::TYPE_NAME == alertType) {
-        parsedAlert = std::make_shared<Timer>();
+        parsedAlert = std::make_shared<Timer>(m_alertsAudioFactory->timerDefault(), m_alertsAudioFactory->timerShort());
+    } else if (Reminder::TYPE_NAME == alertType) {
+        parsedAlert =
+            std::make_shared<Reminder>(m_alertsAudioFactory->reminderDefault(), m_alertsAudioFactory->reminderShort());
     }
 
     if (!parsedAlert) {
@@ -721,104 +454,117 @@ bool AlertsCapabilityAgent::handleSetAlert(const std::shared_ptr<avsCommon::avs:
 
     *alertToken = parsedAlert->getToken();
 
-    std::lock_guard<std::mutex> lock(m_mutex);
-
-    if (m_activeAlert &&
-        (m_activeAlert->getToken() == *alertToken) &&
-        (Alert::State::ACTIVE == m_activeAlert->getState())) {
-        snoozeAlertLocked(m_activeAlert, parsedAlert->getScheduledTime_ISO_8601());
-        sendEvent(ALERT_STOPPED_EVENT_NAME, m_activeAlert->getToken());
-    } else {
-        if (getScheduledAlertByTokenLocked(parsedAlert->getToken())) {
-            // This is the best default behavior.  If we send SetAlertFailed for a duplicate Alert,
-            // then AVS will follow up with a DeleteAlert Directive - just to ensure the client does not
-            // have a bad version of the Alert hanging around.  We already have the Alert, so let's return true,
-            // so that SetAlertSucceeded will be sent back to AVS.
-            ACSDK_INFO(LX("handleSetAlert").m("Duplicate SetAlert from AVS."));
-            return true;
-        }
-
-        int64_t unixEpochNow;
-        if (!getCurrentUnixTime(&unixEpochNow)) {
-            ACSDK_ERROR(LX("handleSetAlertFailed").d("reason", "could not get current unix time."));
-            return false;
-        }
-
-        if (isAlertPastDue(parsedAlert, unixEpochNow)) {
-            ACSDK_ERROR(LX("handleSetAlertFailed").d("reason", "parsed alert is past-due.  Ignoring."));
-            return false;
-        } else {
-            // it's a new alert.
-            if (!m_alertStorage->store(parsedAlert)) {
-                ACSDK_ERROR(LX("handleSetAlertFailed").d("reason", "could not store alert in database."));
-                return false;
-            }
-            parsedAlert->setRenderer(m_alertRenderer);
-            parsedAlert->setObserver(this);
-            m_scheduledAlerts.insert(parsedAlert);
-
-            updateContextManagerLocked();
-
-            if (!m_activeAlert) {
-                scheduleNextAlertForRendering();
-            }
-        }
+    if (m_alertScheduler.isAlertActive(parsedAlert)) {
+        return m_alertScheduler.snoozeAlert(parsedAlert->getToken(), parsedAlert->getScheduledTime_ISO_8601());
     }
+
+    if (!m_alertScheduler.scheduleAlert(parsedAlert)) {
+        return false;
+    }
+
+    updateContextManager();
 
     return true;
 }
 
-bool AlertsCapabilityAgent::handleDeleteAlert(const std::shared_ptr<avsCommon::avs::AVSDirective> & directive,
-                                              const rapidjson::Document & payload,
-                                              std::string* alertToken) {
+bool AlertsCapabilityAgent::handleDeleteAlert(
+    const std::shared_ptr<avsCommon::avs::AVSDirective>& directive,
+    const rapidjson::Document& payload,
+    std::string* alertToken) {
+    ACSDK_DEBUG5(LX(__func__));
     if (!retrieveValue(payload, DIRECTIVE_PAYLOAD_TOKEN_KEY, alertToken)) {
         ACSDK_ERROR(LX("handleDeleteAlertFailed").m("Could not find token in the payload."));
         return false;
     }
 
-    if (m_activeAlert && m_activeAlert->getToken() == *alertToken) {
-        sendEvent(ALERT_STOPPED_EVENT_NAME, *alertToken);
-        deactivateActiveAlertHelper(Alert::StopReason::AVS_STOP);
-        return true;
-    }
-
-    std::lock_guard<std::mutex> lock(m_mutex);
-
-    auto alert = getScheduledAlertByTokenLocked(*alertToken);
-
-    if (!alert) {
-        ACSDK_ERROR(LX("handleDeleteAlertFailed").m("could not find alert in map").d("token", *alertToken));
+    if (!m_alertScheduler.deleteAlert(*alertToken)) {
         return false;
     }
 
-    if (!m_alertStorage->erase(alert)) {
-        ACSDK_ERROR(LX("handleDeleteAlertFailed").m("Could not erase alert from database").d("token", *alertToken));
-    }
-
-    m_scheduledAlerts.erase(alert);
-    updateContextManagerLocked();
-    scheduleNextAlertForRendering();
+    updateContextManager();
 
     return true;
 }
 
-void AlertsCapabilityAgent::sendEvent(const std::string & eventName, const std::string & alertToken) {
+bool AlertsCapabilityAgent::handleDeleteAlerts(
+    const std::shared_ptr<avsCommon::avs::AVSDirective>& directive,
+    const rapidjson::Document& payload) {
+    ACSDK_DEBUG5(LX(__func__));
 
-    /**
-     * TODO : ACSDK-393 to investigate if Events which cannot be sent right away should be stored somehow and
-     * sent retrospectively once a connection is established.
-     */
+    std::list<std::string> alertTokens;
 
-    if (!m_isConnected) {
-        ACSDK_INFO(LX("sendEventFailed").m("Not connected - cannot send Event."));
-        return;
+    auto tokensPayload = payload.FindMember(DIRECTIVE_PAYLOAD_TOKENS_KEY.c_str());
+    if (tokensPayload == payload.MemberEnd()) {
+        ACSDK_ERROR(LX("handleDeleteAlertsFailed").d("reason", "Cannot find tokens in payload"));
+        return false;
     }
 
-    if (!m_sendEventsEnabled) {
-        ACSDK_INFO(LX("sendEventFailed").m("Not enabled to send events."));
-        return;
+    if (!tokensPayload->value.IsArray()) {
+        ACSDK_ERROR(LX("handleDeleteAlertsFailed")
+                        .d("reason", "value is expected to be an array")
+                        .d("key", DIRECTIVE_PAYLOAD_TOKENS_KEY.c_str()));
+        return false;
     }
 
+    auto tokenArray = tokensPayload->value.GetArray();
+    for (rapidjson::SizeType i = 0; i < tokenArray.Size(); i++) {
+        std::string token;
+        if (!convertToValue(tokenArray[i], &token)) {
+            ACSDK_WARN(LX("handleDeleteAlertsFailed").d("reason", "invalid token in payload"));
+            continue;
+        }
+        alertTokens.push_back(token);
+    }
+
+    if (!m_alertScheduler.deleteAlerts(alertTokens)) {
+        sendBulkEvent(ALERT_DELETE_ALERTS_FAILED_EVENT_NAME, alertTokens, true);
+        return false;
+    }
+
+    sendBulkEvent(ALERT_DELETE_ALERTS_SUCCEEDED_EVENT_NAME, alertTokens, true);
+    updateContextManager();
+
+    return true;
+}
+
+bool AlertsCapabilityAgent::handleSetVolume(
+    const std::shared_ptr<avsCommon::avs::AVSDirective>& directive,
+    const rapidjson::Document& payload) {
+    ACSDK_DEBUG5(LX(__func__));
+    int64_t volumeValue = 0;
+    if (!retrieveValue(payload, DIRECTIVE_PAYLOAD_VOLUME, &volumeValue)) {
+        ACSDK_ERROR(LX("handleSetVolumeFailed").m("Could not find volume in the payload."));
+        return false;
+    }
+
+    setNextAlertVolume(volumeValue);
+
+    return true;
+}
+
+bool AlertsCapabilityAgent::handleAdjustVolume(
+    const std::shared_ptr<avsCommon::avs::AVSDirective>& directive,
+    const rapidjson::Document& payload) {
+    ACSDK_DEBUG5(LX(__func__));
+    int64_t adjustValue = 0;
+    if (!retrieveValue(payload, DIRECTIVE_PAYLOAD_VOLUME, &adjustValue)) {
+        ACSDK_ERROR(LX("handleAdjustVolumeFailed").m("Could not find volume in the payload."));
+        return false;
+    }
+
+    SpeakerInterface::SpeakerSettings speakerSettings;
+    if (!m_speakerManager->getSpeakerSettings(SpeakerInterface::Type::AVS_ALERTS_VOLUME, &speakerSettings).get()) {
+        ACSDK_ERROR(LX("handleAdjustVolumeFailed").m("Could not retrieve speaker volume."));
+        return false;
+    }
+    int64_t volume = adjustValue + speakerSettings.volume;
+
+    setNextAlertVolume(volume);
+
+    return true;
+}
+
+void AlertsCapabilityAgent::sendEvent(const std::string& eventName, const std::string& alertToken, bool isCertified) {
     rapidjson::Document payload(kObjectType);
     rapidjson::Document::AllocatorType& alloc = payload.GetAllocator();
 
@@ -833,197 +579,407 @@ void AlertsCapabilityAgent::sendEvent(const std::string & eventName, const std::
 
     auto jsonEventString = buildJsonEventString(eventName, EMPTY_DIALOG_REQUEST_ID, buffer.GetString()).second;
 
-    auto request = std::make_shared<MessageRequest>(jsonEventString);
-    m_messageSender->sendMessage(request);
+    if (isCertified) {
+        m_certifiedSender->sendJSONMessage(jsonEventString);
+    } else {
+        if (!m_isConnected) {
+            ACSDK_WARN(
+                LX("sendEvent").m("Not connected to AVS.  Not sending Event.").d("event details", jsonEventString));
+        } else {
+            auto request = std::make_shared<MessageRequest>(jsonEventString);
+            m_messageSender->sendMessage(request);
+        }
+    }
+}
+
+void AlertsCapabilityAgent::sendBulkEvent(
+    const std::string& eventName,
+    const std::list<std::string>& tokenList,
+    bool isCertified) {
+    rapidjson::Document payload(kObjectType);
+    rapidjson::Document::AllocatorType& alloc = payload.GetAllocator();
+
+    rapidjson::Value jsonTokenList(kArrayType);
+
+    for (auto& token : tokenList) {
+        jsonTokenList.PushBack(StringRef(token), alloc);
+    }
+
+    payload.AddMember(StringRef(EVENT_PAYLOAD_TOKENS_KEY), jsonTokenList, alloc);
+
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    if (!payload.Accept(writer)) {
+        ACSDK_ERROR(LX("sendBulkEventFailed").m("Could not construct payload."));
+        return;
+    }
+
+    auto jsonEventString = buildJsonEventString(eventName, EMPTY_DIALOG_REQUEST_ID, buffer.GetString()).second;
+
+    if (isCertified) {
+        m_certifiedSender->sendJSONMessage(jsonEventString);
+    } else {
+        if (!m_isConnected) {
+            ACSDK_WARN(LX(__func__).m("Not connected to AVS.  Not sending Event.").d("event details", jsonEventString));
+        } else {
+            auto request = std::make_shared<MessageRequest>(jsonEventString);
+            m_messageSender->sendMessage(request);
+        }
+    }
+}
+
+void AlertsCapabilityAgent::updateAVSWithLocalVolumeChanges(int8_t volume, bool forceUpdate) {
+    if (!forceUpdate && volume == m_lastReportedSpeakerSettings.volume) {
+        // Current speaker volume corresponds to what AVS has
+        ACSDK_DEBUG7(LX("updateAVSWithLocalVolumeChanges").d("Alerts volume already set to this value", volume));
+        return;
+    }
+
+    m_lastReportedSpeakerSettings.volume = volume;
+
+    rapidjson::Document payload(kObjectType);
+    rapidjson::Document::AllocatorType& alloc = payload.GetAllocator();
+
+    payload.AddMember(StringRef(AVS_PAYLOAD_VOLUME_KEY), volume, alloc);
+
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    if (!payload.Accept(writer)) {
+        ACSDK_ERROR(LX("updateAVSWithLocalVolumeChangesFailed").m("Could not construct payload."));
+        return;
+    }
+
+    auto jsonEventString =
+        buildJsonEventString(ALERT_VOLUME_CHANGED_EVENT_NAME, EMPTY_DIALOG_REQUEST_ID, buffer.GetString()).second;
+
+    m_certifiedSender->sendJSONMessage(jsonEventString);
 }
 
 void AlertsCapabilityAgent::sendProcessingDirectiveException(
-        const std::shared_ptr<AVSDirective> & directive, const std::string & errorMessage) {
+    const std::shared_ptr<AVSDirective>& directive,
+    const std::string& errorMessage) {
     auto unparsedDirective = directive->getUnparsedDirective();
 
-    ACSDK_ERROR(LX("sendProcessingDirectiveException")
-            .m("Could not parse directive.")
-            .m(errorMessage)
-            .m(unparsedDirective));
+    ACSDK_ERROR(
+        LX("sendProcessingDirectiveException").m("Could not parse directive.").m(errorMessage).m(unparsedDirective));
 
     m_exceptionEncounteredSender->sendExceptionEncountered(
-            unparsedDirective, ExceptionErrorType::UNEXPECTED_INFORMATION_RECEIVED, errorMessage);
+        unparsedDirective, ExceptionErrorType::UNEXPECTED_INFORMATION_RECEIVED, errorMessage);
 }
 
-void AlertsCapabilityAgent::updateContextManagerLocked() {
-    std::string contextString = getContextString(m_scheduledAlerts, m_activeAlert);
-
-    NamespaceAndName namespaceAndName{AVS_CONTEXT_HEADER_NAMESPACE_VALUE_KEY, AVS_CONTEXT_HEADER_NAME_VALUE_KEY};
-
-    auto setStateSuccess = m_contextManager->setState(
-            namespaceAndName, contextString, StateRefreshPolicy::NEVER);
-
-    if (setStateSuccess != SetStateResult::SUCCESS) {
-        ACSDK_ERROR(LX("updateContextManagerFailed")
-                .m("Could not set the state on the contextManager")
-                .d("result", static_cast<int>(setStateSuccess)));
-    }
-}
-
-void AlertsCapabilityAgent::scheduleNextAlertForRendering() {
-    m_alertSchedulerExecutor.submit([this] () { executeScheduleNextAlertForRendering(); });
-}
-
-void AlertsCapabilityAgent::executeScheduleNextAlertForRendering() {
-    std::unique_lock<std::mutex> lock(m_mutex);
-
-    if (m_activeAlert) {
-        ACSDK_INFO(LX("executeScheduleNextAlertForRendering").m("An alert is already active."));
-        return;
-    }
-
-    if (m_scheduledAlerts.empty()) {
-        ACSDK_INFO(LX("executeScheduleNextAlertForRendering").m("no work to do."));
-        return;
-    }
-
-    auto alert = (*m_scheduledAlerts.begin());
-
-    lock.unlock();
-
-    if (m_scheduledAlertTimer.isActive()) {
-        m_scheduledAlertTimer.stop();
-    }
-
-    int64_t timeNow;
-    if (!getCurrentUnixTime(&timeNow)) {
-        ACSDK_ERROR(LX("executeScheduleNextAlertForRenderingFailed").d("reason", "could not get current unix time."));
-        return;
-    }
-
-    std::chrono::seconds secondsToWait{alert->getScheduledTime_Unix() - timeNow};
-
-    if (secondsToWait < std::chrono::seconds::zero()) {
-        secondsToWait = std::chrono::seconds::zero();
-    }
-
-    if (secondsToWait == std::chrono::seconds::zero()) {
-        if (!acquireChannel()) {
-            ACSDK_ERROR(LX("executeScheduleNextAlertForRenderingFailed").m("Could not request channel."));
-            return;
-        }
-    } else {
-        releaseChannel();
-
-        // start the timer for the next alert.
-        if (!m_scheduledAlertTimer.start(
-                secondsToWait, std::bind(&AlertsCapabilityAgent::acquireChannel, this)).valid()) {
-            ACSDK_ERROR(LX("executeScheduleNextAlertForRenderingFailed").d("reason", "startTimerFailed"));
-        }
-    }
-}
-
-void AlertsCapabilityAgent::activateNextAlertLocked() {
-    if (m_activeAlert) {
-        ACSDK_ERROR(LX("activateNextAlertLockedFailed").d("reason", "An alert is already active."));
-        return;
-    }
-
-    if (m_scheduledAlerts.empty()) {
-        releaseChannel();
-        return;
-    }
-
-    m_activeAlert = *(m_scheduledAlerts.begin());
-    m_scheduledAlerts.erase(m_scheduledAlerts.begin());
-
-    m_activeAlert->setFocusState(m_focusState);
-    m_activeAlert->activate();
-}
-
-std::shared_ptr<Alert> AlertsCapabilityAgent::getScheduledAlertByTokenLocked(const std::string & token) {
-    for (auto & alert : m_scheduledAlerts) {
-        if (token == alert->getToken()) {
-            return alert;
-        }
-    }
-
-    return nullptr;
-}
-
-bool AlertsCapabilityAgent::snoozeAlertLocked(std::shared_ptr<Alert> alert, const std::string & updatedTime) {
-    // let's make sure we only snooze an alarm.  Other alert types can't be snoozed.
-    if (alert->getTypeName() != Alarm::TYPE_NAME) {
-        ACSDK_ERROR(LX("snoozeAlertFailed").d("reason", "attempt to snooze a non-alarm alert."));
-        return false;
-    }
-
-    alert->snooze(updatedTime);
-
-    if (!m_alertStorage->modify(alert)) {
-        ACSDK_ERROR(LX("snoozeAlertFailed").d("reason", "could not modify alert in database for snooze."));
-        return false;
-    }
-
-    updateContextManagerLocked();
-
-    return true;
-}
-
-bool AlertsCapabilityAgent::acquireChannel() {
-    if (m_activeAlert) {
-        ACSDK_ERROR(LX("acquireChannelFailed").m("An alert is already active.  Not scheduling another."));
-        return false;
-    }
-
-    if (m_scheduledAlerts.empty()) {
-        ACSDK_ERROR(LX("acquireChannelFailed").m("no work to do."));
-        return false;
-    }
-
-    if (FocusState::NONE == m_focusState) {
-        m_focusManager->acquireChannel(FocusManagerInterface::ALERTS_CHANNEL_NAME, shared_from_this(), ACTIVITY_ID);
-        return true;
-    }
-
-    return false;
+void AlertsCapabilityAgent::acquireChannel() {
+    ACSDK_DEBUG9(LX("acquireChannel"));
+    m_focusManager->acquireChannel(FocusManagerInterface::ALERT_CHANNEL_NAME, shared_from_this(), NAMESPACE);
 }
 
 void AlertsCapabilityAgent::releaseChannel() {
-    if (FocusState::NONE != m_focusState) {
-        m_focusManager->releaseChannel(FocusManagerInterface::ALERTS_CHANNEL_NAME, shared_from_this());
+    ACSDK_DEBUG9(LX("releaseChannel"));
+    if (m_alertScheduler.getFocusState() != FocusState::NONE) {
+        m_focusManager->releaseChannel(FocusManagerInterface::ALERT_CHANNEL_NAME, shared_from_this());
     }
 }
 
-void AlertsCapabilityAgent::filterPastDueAlerts() {
-    int64_t unixEpochNow;
-    if (!getCurrentUnixTime(&unixEpochNow)) {
-        ACSDK_ERROR(LX("filterPastDueAlertsFailed").d("reason", "could not get current unix time."));
+void AlertsCapabilityAgent::executeHandleDirectiveImmediately(std::shared_ptr<DirectiveInfo> info) {
+    ACSDK_DEBUG1(LX("executeHandleDirectiveImmediately"));
+    auto& directive = info->directive;
+
+    rapidjson::Document payload;
+    payload.Parse(directive->getPayload());
+
+    if (payload.HasParseError()) {
+        std::string errorMessage = "Unable to parse payload";
+        ACSDK_ERROR(LX("executeHandleDirectiveImmediatelyFailed").m(errorMessage));
+        sendProcessingDirectiveException(directive, errorMessage);
         return;
     }
 
-    std::lock_guard<std::mutex> lock(m_mutex);
+    auto directiveName = directive->getName();
+    std::string alertToken;
 
-    for (auto & alert : m_scheduledAlerts) {
-        if (isAlertPastDue(alert, unixEpochNow)) {
-            m_pastDueAlerts.push_back(alert);
+    if (DIRECTIVE_NAME_SET_ALERT == directiveName) {
+        if (handleSetAlert(directive, payload, &alertToken)) {
+            sendEvent(SET_ALERT_SUCCEEDED_EVENT_NAME, alertToken, true);
+        } else {
+            sendEvent(SET_ALERT_FAILED_EVENT_NAME, alertToken, true);
+        }
+    } else if (DIRECTIVE_NAME_DELETE_ALERT == directiveName) {
+        if (handleDeleteAlert(directive, payload, &alertToken)) {
+            sendEvent(DELETE_ALERT_SUCCEEDED_EVENT_NAME, alertToken, true);
+        } else {
+            sendEvent(DELETE_ALERT_FAILED_EVENT_NAME, alertToken, true);
+        }
+    } else if (DIRECTIVE_NAME_DELETE_ALERTS == directiveName) {
+        handleDeleteAlerts(directive, payload);
+    } else if (DIRECTIVE_NAME_SET_VOLUME == directiveName) {
+        handleSetVolume(directive, payload);
+    } else if (DIRECTIVE_NAME_ADJUST_VOLUME == directiveName) {
+        handleAdjustVolume(directive, payload);
+    }
+}
+
+void AlertsCapabilityAgent::executeOnConnectionStatusChanged(const Status status, const ChangedReason reason) {
+    ACSDK_DEBUG1(LX("executeOnConnectionStatusChanged").d("status", status).d("reason", reason));
+    m_isConnected = (Status::CONNECTED == status);
+}
+
+void AlertsCapabilityAgent::executeOnFocusChanged(avsCommon::avs::FocusState focusState) {
+    ACSDK_DEBUG1(LX("executeOnFocusChanged").d("focusState", focusState));
+    m_alertScheduler.updateFocus(focusState);
+}
+
+void AlertsCapabilityAgent::executeOnFocusManagerFocusChanged(
+    const std::string& channelName,
+    avsCommon::avs::FocusState focusState) {
+    bool stateIsActive = focusState != FocusState::NONE;
+
+    if (FocusManagerInterface::CONTENT_CHANNEL_NAME == channelName) {
+        m_contentChannelIsActive = stateIsActive;
+    } else if (FocusManagerInterface::COMMUNICATIONS_CHANNEL_NAME == channelName) {
+        m_commsChannelIsActive = stateIsActive;
+    } else {
+        return;
+    }
+
+    if (m_alertIsSounding) {
+        if (!m_commsChannelIsActive && !m_contentChannelIsActive) {
+            // All lower channels of interest are stopped playing content. Return alert volume to base value
+            // if needed.
+            SpeakerInterface::SpeakerSettings speakerSettings;
+            if (!getAlertVolumeSettings(&speakerSettings)) {
+                ACSDK_ERROR(LX("executeOnFocusChangedFailed").d("reason", "Failed to get speaker settings."));
+                return;
+            }
+
+            if (speakerSettings.volume > m_lastReportedSpeakerSettings.volume) {
+                // Alert is sounding with volume higher than Base Volume. Assume that it was adjusted because of
+                // content being played and reset it to the base one. Keep lower values, though.
+                m_speakerManager->setVolume(
+                    SpeakerInterface::Type::AVS_ALERTS_VOLUME, m_lastReportedSpeakerSettings.volume);
+            }
+        }
+    }
+}
+
+void AlertsCapabilityAgent::executeOnAlertStateChange(
+    const std::string& alertToken,
+    const std::string& alertType,
+    AlertObserverInterface::State state,
+    const std::string& reason) {
+    ACSDK_DEBUG1(LX("executeOnAlertStateChange").d("alertToken", alertToken).d("state", state).d("reason", reason));
+
+    bool alertIsActive = false;
+
+    switch (state) {
+        case AlertObserverInterface::State::READY:
+            acquireChannel();
+            break;
+
+        case AlertObserverInterface::State::STARTED:
+            sendEvent(ALERT_STARTED_EVENT_NAME, alertToken, true);
+            updateContextManager();
+            alertIsActive = true;
+            break;
+
+        case AlertObserverInterface::State::SNOOZED:
+            releaseChannel();
+            updateContextManager();
+            break;
+
+        case AlertObserverInterface::State::STOPPED:
+            sendEvent(ALERT_STOPPED_EVENT_NAME, alertToken, true);
+            releaseChannel();
+            updateContextManager();
+            break;
+
+        case AlertObserverInterface::State::COMPLETED:
+            sendEvent(ALERT_STOPPED_EVENT_NAME, alertToken, true);
+            releaseChannel();
+            updateContextManager();
+            break;
+
+        case AlertObserverInterface::State::ERROR:
+            releaseChannel();
+            updateContextManager();
+            break;
+
+        case AlertObserverInterface::State::PAST_DUE:
+            sendEvent(ALERT_STOPPED_EVENT_NAME, alertToken, true);
+            break;
+
+        case AlertObserverInterface::State::FOCUS_ENTERED_FOREGROUND:
+            alertIsActive = true;
+            sendEvent(ALERT_ENTERED_FOREGROUND_EVENT_NAME, alertToken);
+            break;
+
+        case AlertObserverInterface::State::FOCUS_ENTERED_BACKGROUND:
+            alertIsActive = true;
+            sendEvent(ALERT_ENTERED_BACKGROUND_EVENT_NAME, alertToken);
+            break;
+    }
+
+    if (alertIsActive) {
+        // Alert is going to go off
+        m_alertIsSounding = true;
+        // Check if there are lower channels with content being played and increase alert volume if needed.
+        if (m_contentChannelIsActive || m_commsChannelIsActive) {
+            SpeakerInterface::SpeakerSettings contentSpeakerSettings;
+            if (getSpeakerVolumeSettings(&contentSpeakerSettings)) {
+                if (m_lastReportedSpeakerSettings.volume < contentSpeakerSettings.volume) {
+                    // Adjust alerts volume to be at least as loud as content volume
+                    m_speakerManager->setVolume(
+                        SpeakerInterface::Type::AVS_ALERTS_VOLUME, contentSpeakerSettings.volume);
+                }
+            }
+        }
+    } else {
+        if (m_alertIsSounding) {
+            // Alert has just switched from STARTED to something else, since it could not transition from STARTED to
+            // READY we may treat it as it is stopping.
+
+            // Reset Active Alerts Volume volume to the Base Alerts Volume when alert stops
+            m_alertIsSounding = false;
+            m_speakerManager->setVolume(
+                SpeakerInterface::Type::AVS_ALERTS_VOLUME, m_lastReportedSpeakerSettings.volume);
         }
     }
 
-    for (auto & alert : m_pastDueAlerts) {
-        std::string alertToken = alert->getToken();
-        sendEvent(ALERT_STOPPED_EVENT_NAME, alertToken);
+    m_executor.submit([this, alertToken, alertType, state, reason]() {
+        executeNotifyObservers(alertToken, alertType, state, reason);
+    });
+}
 
-        m_caExecutor.submit([this, alertToken]() {
-            executeNotifyObserver(alertToken, AlertObserverInterface::State::PAST_DUE, "");
-        });
+void AlertsCapabilityAgent::executeAddObserver(std::shared_ptr<AlertObserverInterface> observer) {
+    ACSDK_DEBUG1(LX("executeAddObserver").d("observer", observer.get()));
+    m_observers.insert(observer);
+}
 
-        m_scheduledAlerts.erase(alert);
-        m_alertStorage->erase(alert);
+void AlertsCapabilityAgent::executeRemoveObserver(std::shared_ptr<AlertObserverInterface> observer) {
+    ACSDK_DEBUG1(LX("executeRemoveObserver").d("observer", observer.get()));
+    m_observers.erase(observer);
+}
+
+void AlertsCapabilityAgent::executeNotifyObservers(
+    const std::string& alertToken,
+    const std::string& alertType,
+    AlertObserverInterface::State state,
+    const std::string& reason) {
+    ACSDK_DEBUG1(LX("executeNotifyObservers")
+                     .d("alertToken", alertToken)
+                     .d("alertType", alertType)
+                     .d("state", state)
+                     .d("reason", reason));
+    for (auto observer : m_observers) {
+        observer->onAlertStateChange(alertToken, alertType, state, reason);
     }
 }
 
-void AlertsCapabilityAgent::deactivateActiveAlertHelper(Alert::StopReason stopReason) {
-    if (m_activeAlert) {
-        m_activeAlert->deActivate(stopReason);
+void AlertsCapabilityAgent::executeRemoveAllAlerts() {
+    ACSDK_DEBUG1(LX("executeRemoveAllAlerts"));
+    m_alertScheduler.clearData();
+}
+
+void AlertsCapabilityAgent::executeOnLocalStop() {
+    ACSDK_DEBUG1(LX("executeOnLocalStop"));
+    m_alertScheduler.onLocalStop();
+}
+
+void AlertsCapabilityAgent::updateContextManager() {
+    std::string contextString = getContextString();
+
+    NamespaceAndName namespaceAndName{AVS_CONTEXT_HEADER_NAMESPACE_VALUE_KEY, AVS_CONTEXT_HEADER_NAME_VALUE_KEY};
+
+    auto setStateSuccess = m_contextManager->setState(namespaceAndName, contextString, StateRefreshPolicy::NEVER);
+
+    if (setStateSuccess != SetStateResult::SUCCESS) {
+        ACSDK_ERROR(LX("updateContextManagerFailed")
+                        .m("Could not set the state on the contextManager")
+                        .d("result", static_cast<int>(setStateSuccess)));
     }
 }
 
-} // namespace alerts
-} // namespace capabilityAgents
-} // namespace alexaClientSDK
+std::string AlertsCapabilityAgent::getContextString() {
+    rapidjson::Document state(kObjectType);
+    rapidjson::Document::AllocatorType& alloc = state.GetAllocator();
+
+    auto alertsContextInfo = m_alertScheduler.getContextInfo();
+    auto allAlertsJsonValue = buildAllAlertsContext(alertsContextInfo.scheduledAlerts, alloc);
+    auto activeAlertsJsonValue = buildActiveAlertsContext(alertsContextInfo.activeAlerts, alloc);
+
+    state.AddMember(StringRef(AVS_CONTEXT_ALL_ALERTS_TOKEN_KEY), allAlertsJsonValue, alloc);
+    state.AddMember(StringRef(AVS_CONTEXT_ACTIVE_ALERTS_TOKEN_KEY), activeAlertsJsonValue, alloc);
+
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    if (!state.Accept(writer)) {
+        ACSDK_ERROR(LX("getContextStringFailed").d("reason", "writerRefusedJsonObject"));
+        return "";
+    }
+
+    return buffer.GetString();
+}
+
+void AlertsCapabilityAgent::clearData() {
+    auto result = m_executor.submit([this]() { m_alertScheduler.clearData(Alert::StopReason::LOG_OUT); });
+    result.wait();
+}
+
+std::unordered_set<std::shared_ptr<avsCommon::avs::CapabilityConfiguration>> AlertsCapabilityAgent::
+    getCapabilityConfigurations() {
+    return m_capabilityConfigurations;
+}
+
+void AlertsCapabilityAgent::onSpeakerSettingsChanged(
+    const SpeakerManagerObserverInterface::Source& source,
+    const SpeakerInterface::Type& type,
+    const SpeakerInterface::SpeakerSettings& settings) {
+    m_executor.submit([this, settings, type]() { executeOnSpeakerSettingsChanged(type, settings); });
+}
+
+bool AlertsCapabilityAgent::getAlertVolumeSettings(
+    avsCommon::sdkInterfaces::SpeakerInterface::SpeakerSettings* speakerSettings) {
+    if (!m_speakerManager->getSpeakerSettings(SpeakerInterface::Type::AVS_ALERTS_VOLUME, speakerSettings).get()) {
+        ACSDK_ERROR(LX("getAlertSpeakerSettingsFailed").d("reason", "Failed to get speaker settings"));
+        return false;
+    }
+    return true;
+}
+
+bool AlertsCapabilityAgent::getSpeakerVolumeSettings(
+    avsCommon::sdkInterfaces::SpeakerInterface::SpeakerSettings* speakerSettings) {
+    if (!m_speakerManager->getSpeakerSettings(SpeakerInterface::Type::AVS_SPEAKER_VOLUME, speakerSettings).get()) {
+        ACSDK_ERROR(LX("getContentSpeakerSettingsFailed").d("reason", "Failed to get speaker settings"));
+        return false;
+    }
+    return true;
+}
+
+void AlertsCapabilityAgent::setNextAlertVolume(int64_t volume) {
+    if (volume < speakerConstants::AVS_SET_VOLUME_MIN) {
+        volume = speakerConstants::AVS_SET_VOLUME_MIN;
+        ACSDK_DEBUG7(LX(__func__).m("Requested volume is lower than allowed minimum, using minimum instead."));
+    } else if (volume > speakerConstants::AVS_SET_VOLUME_MAX) {
+        volume = speakerConstants::AVS_SET_VOLUME_MAX;
+        ACSDK_DEBUG7(LX(__func__).m("Requested volume is higher than allowed maximum, using maximum instead."));
+    }
+
+    ACSDK_DEBUG5(LX(__func__).d("New Alerts volume", volume));
+
+    m_speakerManager
+        ->setVolume(avsCommon::sdkInterfaces::SpeakerInterface::Type::AVS_ALERTS_VOLUME, static_cast<int8_t>(volume))
+        .get();
+
+    // Always notify AVS of volume changes here
+    updateAVSWithLocalVolumeChanges(static_cast<int8_t>(volume), true);
+}
+
+void AlertsCapabilityAgent::executeOnSpeakerSettingsChanged(
+    const SpeakerInterface::Type& type,
+    const SpeakerInterface::SpeakerSettings& speakerSettings) {
+    if (SpeakerInterface::Type::AVS_ALERTS_VOLUME == type && !m_alertIsSounding) {
+        updateAVSWithLocalVolumeChanges(speakerSettings.volume, false);
+    }
+}
+
+}  // namespace alerts
+}  // namespace capabilityAgents
+}  // namespace alexaClientSDK

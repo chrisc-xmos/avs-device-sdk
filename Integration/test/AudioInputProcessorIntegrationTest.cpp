@@ -1,7 +1,5 @@
 /*
- * AudioInputProcessorTest.cpp
- *
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -15,42 +13,38 @@
  * permissions and limitations under the License.
  */
 
-/// @file AudioInputProcessorTest.cpp
-#include <gtest/gtest.h>
-#include <string>
-#include <future>
-#include <fstream>
+/// @file AudioInputProcessorIntegrationTest.cpp
+
 #include <chrono>
 #include <deque>
+#include <fstream>
+#include <future>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 
-#include "ACL/AVSConnectionManager.h"
-#include "ACL/Transport/HTTP2MessageRouter.h"
-#include "ADSL/DirectiveSequencer.h"
-#include "ADSL/MessageInterpreter.h"
-#include "AFML/Channel.h"
-#include "AFML/FocusManager.h"
-#include "AuthDelegate/AuthDelegate.h"
-#include "AIP/AudioInputProcessor.h"
-#include "AIP/AudioProvider.h"
-#include "AIP/Initiator.h"
-#include "AVSCommon/AVS/Attachment/InProcessAttachmentWriter.h"
-#include "AVSCommon/AVS/BlockingPolicy.h"
-#include "AVSCommon/AVS/MessageRequest.h"
-#include "AVSCommon/SDKInterfaces/ExceptionEncounteredSenderInterface.h"
-#include "AVSCommon/Utils/JSON/JSONUtils.h"
-#include "AVSCommon/SDKInterfaces/ChannelObserverInterface.h"
-#include "AVSCommon/SDKInterfaces/ContextManagerInterface.h"
-#include "AVSCommon/SDKInterfaces/DirectiveHandlerInterface.h"
-#include "AVSCommon/SDKInterfaces/DirectiveHandlerResultInterface.h"
-#include "AVSCommon/SDKInterfaces/KeyWordObserverInterface.h"
-#include "AVSCommon/AVS/Initialization/AlexaClientSDKInit.h"
-#include "AVSCommon/Utils/Logger/LogEntry.h"
-#include "ContextManager/ContextManager.h"
-#include "Integration/AuthObserver.h"
-#include "Integration/ClientMessageHandler.h"
-#include "Integration/ConnectionStatusObserver.h"
+#include <gtest/gtest.h>
+
+#include <ACL/AVSConnectionManager.h>
+#include <ADSL/DirectiveSequencer.h>
+#include <ADSL/MessageInterpreter.h>
+#include <AFML/Channel.h>
+#include <AFML/FocusManager.h>
+#include <AIP/AudioInputProcessor.h>
+#include <AIP/AudioProvider.h>
+#include <AIP/Initiator.h>
+#include <AVSCommon/AVS/Attachment/InProcessAttachmentWriter.h>
+#include <AVSCommon/AVS/BlockingPolicy.h>
+#include <AVSCommon/AVS/MessageRequest.h>
+#include <AVSCommon/SDKInterfaces/ChannelObserverInterface.h>
+#include <AVSCommon/SDKInterfaces/DirectiveHandlerInterface.h>
+#include <AVSCommon/SDKInterfaces/DirectiveHandlerResultInterface.h>
+#include <AVSCommon/SDKInterfaces/ExceptionEncounteredSenderInterface.h>
+#include <AVSCommon/SDKInterfaces/KeyWordObserverInterface.h>
+#include <AVSCommon/Utils/JSON/JSONUtils.h>
+#include <AVSCommon/Utils/Logger/LogEntry.h>
+
+#include "Integration/ACLTestContext.h"
 #include "Integration/ObservableMessageRequest.h"
 #include "Integration/AipStateObserver.h"
 #include "Integration/TestMessageSender.h"
@@ -71,13 +65,11 @@ namespace test {
 
 using namespace alexaClientSDK::acl;
 using namespace alexaClientSDK::adsl;
-using namespace alexaClientSDK::authDelegate;
 using namespace alexaClientSDK::avsCommon;
 using namespace alexaClientSDK::avsCommon::avs;
 using namespace alexaClientSDK::avsCommon::utils;
 using namespace alexaClientSDK::avsCommon::avs::attachment;
 using namespace alexaClientSDK::avsCommon::sdkInterfaces;
-using namespace alexaClientSDK::avsCommon::avs::initialization;
 using namespace capabilityAgents::aip;
 using namespace capabilityAgents::system;
 using namespace sdkInterfaces;
@@ -100,7 +92,8 @@ static const std::string ALEXA_JOKE_AUDIO_FILE = "/alexa_recognize_joke_test.wav
 static const std::string ALEXA_WIKI_AUDIO_FILE = "/alexa_recognize_wiki_test.wav";
 // This is a 16 bit 16 kHz little endian linear PCM audio file of "Alexa" then silence to be recognized.
 static const std::string ALEXA_SILENCE_AUDIO_FILE = "/alexa_recognize_silence_test.wav";
-
+// This is a 32KHz little endian OPUS audio file with Constant Bit rate of "What time is it?" to be recognized.
+static const std::string TIME_AUDIO_FILE_OPUS = "/utterance_time_success.opus";
 // This string to be used for Speak Directives which use the NAMESPACE_SPEECH_SYNTHESIZER namespace.
 static const std::string NAME_VOLUME_STATE = "VolumeState";
 // This string to be used for Speak Directives which use the NAMESPACE_SPEECH_SYNTHESIZER namespace.
@@ -150,7 +143,10 @@ static const std::chrono::seconds LONG_TIMEOUT_DURATION(10);
 static const std::chrono::seconds SHORT_TIMEOUT_DURATION(2);
 // This Integer to be used when no timeout is desired.
 static const std::chrono::seconds NO_TIMEOUT_DURATION(0);
-
+// The length of RIFF container format which is the header of a wav file.
+static const int RIFF_HEADER_SIZE = 44;
+/// The compatible sample rate for OPUS 32KHz.
+static const unsigned int COMPATIBLE_SAMPLE_RATE_OPUS_32 = 32000;
 #ifdef KWD_KITTAI
 /// The name of the resource file required for Kitt.ai.
 static const std::string RESOURCE_FILE = "/KittAiModels/common.res";
@@ -186,11 +182,11 @@ static const std::string JSON_MESSAGE_PAYLOAD_KEY = "payload";
 static const double KITTAI_SENSITIVITY = 0.6;
 #endif
 /// The compatible encoding for Kitt.ai.
-static const avsCommon::utils::AudioFormat::Encoding COMPATIBLE_ENCODING = 
-        avsCommon::utils::AudioFormat::Encoding::LPCM;
+static const avsCommon::utils::AudioFormat::Encoding COMPATIBLE_ENCODING =
+    avsCommon::utils::AudioFormat::Encoding::LPCM;
 /// The compatible endianness for Kitt.ai.
-static const avsCommon::utils::AudioFormat::Endianness COMPATIBLE_ENDIANNESS = 
-        avsCommon::utils::AudioFormat::Endianness::LITTLE;
+static const avsCommon::utils::AudioFormat::Endianness COMPATIBLE_ENDIANNESS =
+    avsCommon::utils::AudioFormat::Endianness::LITTLE;
 /// The compatible sample rate for Kitt.ai.
 static const unsigned int COMPATIBLE_SAMPLE_RATE = 16000;
 /// The compatible bits per sample for Kitt.ai.
@@ -201,10 +197,10 @@ static const unsigned int COMPATIBLE_NUM_CHANNELS = 1;
 /// String to identify log entries originating from this file.
 static const std::string TAG("AlexaDirectiveSequencerLibraryTest");
 
-/// Path to configuration file (from command line arguments).
-std::string configPath;
-/// Path to directory containing input data (from command line arguments).
-std::string inputPath;
+/// Path to the AlexaClientSDKConfig.json file (from command line arguments).
+static std::string g_configPath;
+/// Path to resources (e.g. audio files) for tests (from command line arguments).
+static std::string g_inputPath;
 
 /**
  * Create a LogEntry using this file's TAG and the specified event string.
@@ -213,17 +209,16 @@ std::string inputPath;
  */
 #define LX(event) ::alexaClientSDK::avsCommon::utils::logger::LogEntry(TAG, event)
 
-class tapToTalkButton{
-    public:
+class tapToTalkButton {
+public:
     bool startRecognizing(std::shared_ptr<AudioInputProcessor> aip, std::shared_ptr<AudioProvider> audioProvider) {
         return aip->recognize(*audioProvider, Initiator::TAP).get();
     }
 };
 
-class holdToTalkButton{
+class holdToTalkButton {
 public:
-    bool startRecognizing(std::shared_ptr<AudioInputProcessor> aip,
-        std::shared_ptr<AudioProvider> audioProvider) {
+    bool startRecognizing(std::shared_ptr<AudioInputProcessor> aip, std::shared_ptr<AudioProvider> audioProvider) {
         return aip->recognize(*audioProvider, Initiator::PRESS_AND_HOLD).get();
     }
 
@@ -232,77 +227,76 @@ public:
     }
 };
 
-#ifdef KWD
-class wakeWordTrigger  : public KeyWordObserverInterface{
-    public:
-        wakeWordTrigger(AudioFormat compatibleAudioFormat, std::shared_ptr<AudioInputProcessor> aip) {
-            m_compatibleAudioFormat = compatibleAudioFormat;
-            m_aip = aip;
-        }
+#if defined(KWD_KITTAI) || defined(KWD_SENSORY)
+class wakeWordTrigger : public KeyWordObserverInterface {
+public:
+    wakeWordTrigger(AudioFormat compatibleAudioFormat, std::shared_ptr<AudioInputProcessor> aip) {
+        m_compatibleAudioFormat = compatibleAudioFormat;
+        m_aip = aip;
+    }
     void onKeyWordDetected(
         std::shared_ptr<AudioInputStream> stream,
         std::string keyword,
         AudioInputStream::Index beginIndex,
-        AudioInputStream::Index endIndex) {
+        AudioInputStream::Index endIndex,
+        std::shared_ptr<const std::vector<char>> KWDMetadata = nullptr) {
+        keyWordDetected = true;
+        ASSERT_NE(nullptr, stream);
+        bool alwaysReadable = true;
+        bool canOverride = false;
+        bool canBeOverridden = true;
+        auto audioProvider = AudioProvider(
+            stream, m_compatibleAudioFormat, ASRProfile::NEAR_FIELD, alwaysReadable, !canOverride, canBeOverridden);
 
-            keyWordDetected = true;
-            ASSERT_NE(nullptr, stream);
-            bool alwaysReadable = true;
-            bool canOverride = false;
-            bool canBeOverridden = true;
-            auto audioProvider = AudioProvider( stream, m_compatibleAudioFormat,
-            ASRProfile::NEAR_FIELD, alwaysReadable, !canOverride, canBeOverridden);
+        if (m_aip) {
+            AudioInputStream::Index aipBegin = AudioInputProcessor::INVALID_INDEX;
+            AudioInputStream::Index aipEnd = AudioInputProcessor::INVALID_INDEX;
 
-            if (m_aip) {
-                AudioInputStream::Index aipBegin = AudioInputProcessor::INVALID_INDEX;
-                AudioInputStream::Index aipEnd = AudioInputProcessor::INVALID_INDEX;
-
-                if (endIndex != KeyWordObserverInterface::UNSPECIFIED_INDEX) {
-                    if (beginIndex != KeyWordObserverInterface::UNSPECIFIED_INDEX) {
-                        // If we know where the keyword starts and ends, pass both of those along to AIP.
-                        aipBegin = beginIndex;
-                        aipEnd = endIndex;
-                    } else {
-                        // If we only know where the keyword ends, AIP should begin recording there.
-                        aipBegin = endIndex;
-                    }
+            if (endIndex != KeyWordObserverInterface::UNSPECIFIED_INDEX) {
+                if (beginIndex != KeyWordObserverInterface::UNSPECIFIED_INDEX) {
+                    // If we know where the keyword starts and ends, pass both of those along to AIP.
+                    aipBegin = beginIndex;
+                    aipEnd = endIndex;
+                } else {
+                    // If we only know where the keyword ends, AIP should begin recording there.
+                    aipBegin = endIndex;
                 }
-                // Else we don't have any indices to pass along; AIP will begin recording ASAP.
-#ifdef KWD_KITTAI
-                m_aip->recognize(audioProvider, Initiator::TAP, aipBegin, aipEnd, keyword);
-#elif KWD_SENSORY
-                m_aip->recognize(audioProvider, Initiator::WAKEWORD, aipBegin, aipEnd, keyword);
-#endif
             }
+            auto now = std::chrono::steady_clock::now();
+// Else we don't have any indices to pass along; AIP will begin recording ASAP.
+#ifdef KWD_KITTAI
+            m_aip->recognize(audioProvider, Initiator::TAP, now, aipBegin, aipEnd, keyword);
+#elif KWD_SENSORY
+            m_aip->recognize(audioProvider, Initiator::WAKEWORD, now, aipBegin, aipEnd, keyword);
+#endif
         }
+    }
 
     bool keyWordDetected = false;
     AudioFormat m_compatibleAudioFormat;
     std::shared_ptr<AudioInputProcessor> m_aip;
-
 };
 #endif
 
-class testStateProvider : public StateProviderInterface, public RequiresShutdown {
+class testStateProvider
+        : public StateProviderInterface
+        , public RequiresShutdown {
 public:
     testStateProvider(std::shared_ptr<avsCommon::sdkInterfaces::ContextManagerInterface> contextManager) :
             RequiresShutdown("testStateProvider") {
         m_contextManager = contextManager;
     }
-        ~testStateProvider() {
+    ~testStateProvider() {
     }
-    void doShutdown() override {
-        m_contextManager.reset();
-    }
-    void provideState(const unsigned int stateRequestToken) override {
+    void provideState(const NamespaceAndName& nsname, const unsigned int stateRequestToken) override {
         std::ostringstream context;
         context << R"({)"
-                   R"("volume":)" << 50 << R"(,)"
-            << R"("muted":)" << false << R"(})";
+                   R"("volume":)"
+                << 50 << R"(,)"
+                << R"("muted":)" << false << R"(})";
 
-            m_contextManager->setState(VOLUME_STATE_PAIR,
-            context.str(), avsCommon::avs::StateRefreshPolicy::ALWAYS,
-            stateRequestToken);
+        m_contextManager->setState(
+            VOLUME_STATE_PAIR, context.str(), avsCommon::avs::StateRefreshPolicy::ALWAYS, stateRequestToken);
         m_stateRequested = true;
     }
     bool checkStateRequested() {
@@ -313,10 +307,15 @@ public:
         }
         return savedResult;
     }
-private:
-   bool m_stateRequested  = false;
-   std::shared_ptr<avsCommon::sdkInterfaces::ContextManagerInterface> m_contextManager;
 
+protected:
+    void doShutdown() override {
+        m_contextManager.reset();
+    }
+
+private:
+    bool m_stateRequested = false;
+    std::shared_ptr<avsCommon::sdkInterfaces::ContextManagerInterface> m_contextManager;
 };
 
 /// A test observer that mocks out the ChannelObserverInterface##onFocusChanged() call.
@@ -325,8 +324,7 @@ public:
     /**
      * Constructor.
      */
-    TestClient() :
-        m_focusState(FocusState::NONE) {
+    TestClient() : m_focusState(FocusState::NONE) {
     }
 
     /**
@@ -376,32 +374,20 @@ private:
 class AudioInputProcessorTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        m_context = ACLTestContext::create(g_configPath);
+        ASSERT_TRUE(m_context);
 
-        std::ifstream infile(configPath);
-        ASSERT_TRUE(infile.good());
-        ASSERT_TRUE(AlexaClientSDKInit::initialize({&infile}));
-        m_authObserver = std::make_shared<AuthObserver>();
-        m_authDelegate = AuthDelegate::create();
-        m_authDelegate->addAuthObserver(m_authObserver);
-        m_connectionStatusObserver = std::make_shared<ConnectionStatusObserver>();
-
-        auto attachmentManager = std::make_shared<AttachmentManager>(AttachmentManager::AttachmentType::IN_PROCESS);
-        bool isEnabled = false;
-        m_messageRouter = std::make_shared<HTTP2MessageRouter>(m_authDelegate, attachmentManager);
         m_exceptionEncounteredSender = std::make_shared<TestExceptionEncounteredSender>();
 
         DirectiveHandlerConfiguration handlerConfig;
-        handlerConfig[SET_MUTE_PAIR] = BlockingPolicy::NON_BLOCKING;
-        handlerConfig[SPEAK_PAIR] = BlockingPolicy::BLOCKING;
+        handlerConfig[SET_MUTE_PAIR] = BlockingPolicy(BlockingPolicy::MEDIUM_AUDIO, false);
+        handlerConfig[SPEAK_PAIR] = BlockingPolicy(BlockingPolicy::MEDIUM_AUDIO, true);
         m_directiveHandler = std::make_shared<TestDirectiveHandler>(handlerConfig);
 
         m_directiveSequencer = DirectiveSequencer::create(m_exceptionEncounteredSender);
         ASSERT_NE(nullptr, m_directiveSequencer);
         m_messageInterpreter = std::make_shared<MessageInterpreter>(
-            m_exceptionEncounteredSender,
-            m_directiveSequencer,
-            attachmentManager
-            );
+            m_exceptionEncounteredSender, m_directiveSequencer, m_context->getAttachmentManager());
 
         m_compatibleAudioFormat.sampleRateHz = COMPATIBLE_SAMPLE_RATE;
         m_compatibleAudioFormat.sampleSizeInBits = COMPATIBLE_SAMPLE_SIZE_IN_BITS;
@@ -409,65 +395,69 @@ protected:
         m_compatibleAudioFormat.endianness = COMPATIBLE_ENDIANNESS;
         m_compatibleAudioFormat.encoding = COMPATIBLE_ENCODING;
 
-        size_t nWords = 1024*1024;
+        size_t nWords = 1024 * 1024;
         size_t wordSize = 2;
         size_t maxReaders = 3;
         size_t bufferSize = AudioInputStream::calculateBufferSize(nWords, wordSize, maxReaders);
 
         auto m_Buffer = std::make_shared<avsCommon::avs::AudioInputStream::Buffer>(bufferSize);
         auto m_Sds = avsCommon::avs::AudioInputStream::create(m_Buffer, wordSize, maxReaders);
-        ASSERT_NE (nullptr, m_Sds);
+        ASSERT_NE(nullptr, m_Sds);
         m_AudioBuffer = std::move(m_Sds);
-        m_AudioBufferWriter = m_AudioBuffer->createWriter(
-            avsCommon::avs::AudioInputStream::Writer::Policy::NONBLOCKABLE);
-        ASSERT_NE (nullptr, m_AudioBufferWriter);
+        m_AudioBufferWriter =
+            m_AudioBuffer->createWriter(avsCommon::avs::AudioInputStream::Writer::Policy::NONBLOCKABLE);
+        ASSERT_NE(nullptr, m_AudioBufferWriter);
 
         // Set up tap and hold to talk buttons.
         bool alwaysReadable = true;
         bool canOverride = true;
         bool canBeOverridden = true;
-        m_HoldToTalkAudioProvider = std::make_shared<AudioProvider>( m_AudioBuffer, m_compatibleAudioFormat,
-            ASRProfile::CLOSE_TALK, !alwaysReadable, canOverride, !canBeOverridden);
-        m_TapToTalkAudioProvider = std::make_shared<AudioProvider>( m_AudioBuffer, m_compatibleAudioFormat,
-            ASRProfile::NEAR_FIELD, alwaysReadable, canOverride, !canBeOverridden);
+        m_HoldToTalkAudioProvider = std::make_shared<AudioProvider>(
+            m_AudioBuffer,
+            m_compatibleAudioFormat,
+            ASRProfile::CLOSE_TALK,
+            !alwaysReadable,
+            canOverride,
+            !canBeOverridden);
+        m_TapToTalkAudioProvider = std::make_shared<AudioProvider>(
+            m_AudioBuffer,
+            m_compatibleAudioFormat,
+            ASRProfile::NEAR_FIELD,
+            alwaysReadable,
+            canOverride,
+            !canBeOverridden);
 
         m_tapToTalkButton = std::make_shared<tapToTalkButton>();
         m_holdToTalkButton = std::make_shared<holdToTalkButton>();
-        m_focusManager = std::make_shared<FocusManager>();
+        m_focusManager = std::make_shared<FocusManager>(FocusManager::getDefaultAudioChannels());
         m_dialogUXStateAggregator = std::make_shared<avsCommon::avs::DialogUXStateAggregator>();
 
-        m_contextManager = ContextManager::create();
-        ASSERT_NE (nullptr, m_contextManager);
+        m_stateProvider = std::make_shared<testStateProvider>(m_context->getContextManager());
+        ASSERT_TRUE(m_context->getContextManager());
 
-        m_stateProvider = std::make_shared<testStateProvider>(m_contextManager);
-        m_contextManager->setStateProvider(VOLUME_STATE_PAIR, m_stateProvider);
+        m_context->getContextManager()->setStateProvider(VOLUME_STATE_PAIR, m_stateProvider);
 
         // Set up connection and connect
         m_avsConnectionManager = std::make_shared<TestMessageSender>(
-                m_messageRouter,
-                isEnabled,
-                m_connectionStatusObserver,
-                m_messageInterpreter);
-                ASSERT_NE (nullptr, m_avsConnectionManager);
+            m_context->getMessageRouter(), false, m_context->getConnectionStatusObserver(), m_messageInterpreter);
+        ASSERT_TRUE(m_avsConnectionManager);
+
         connect();
 
-        m_userInactivityMonitor = UserInactivityMonitor::create(
-                m_avsConnectionManager,
-                m_exceptionEncounteredSender);
+        m_userInactivityMonitor = UserInactivityMonitor::create(m_avsConnectionManager, m_exceptionEncounteredSender);
         m_AudioInputProcessor = AudioInputProcessor::create(
             m_directiveSequencer,
             m_avsConnectionManager,
-            m_contextManager,
+            m_context->getContextManager(),
             m_focusManager,
             m_dialogUXStateAggregator,
             m_exceptionEncounteredSender,
-            m_userInactivityMonitor
-        );
-        ASSERT_NE (nullptr, m_AudioInputProcessor);
+            m_userInactivityMonitor);
+        ASSERT_NE(nullptr, m_AudioInputProcessor);
         m_AudioInputProcessor->addObserver(m_dialogUXStateAggregator);
 
         m_testClient = std::make_shared<TestClient>();
-        ASSERT_TRUE(m_focusManager->acquireChannel(FocusManager::ALERTS_CHANNEL_NAME, m_testClient, ALARM_ACTIVITY_ID));
+        ASSERT_TRUE(m_focusManager->acquireChannel(FocusManager::ALERT_CHANNEL_NAME, m_testClient, ALARM_ACTIVITY_ID));
         ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::FOREGROUND);
 
         m_StateObserver = std::make_shared<AipStateObserver>();
@@ -476,71 +466,77 @@ protected:
 
         ASSERT_TRUE(m_directiveSequencer->addDirectiveHandler(m_AudioInputProcessor));
 
-#ifdef KWD
+#if defined(KWD_KITTAI) || defined(KWD_SENSORY)
         m_wakeWordTrigger = std::make_shared<wakeWordTrigger>(m_compatibleAudioFormat, m_AudioInputProcessor);
 
 #ifdef KWD_KITTAI
         kwd::KittAiKeyWordDetector::KittAiConfiguration config;
-        config = {inputPath+MODEL_FILE, MODEL_KEYWORD, KITTAI_SENSITIVITY};
+        config = {g_inputPath + MODEL_FILE, MODEL_KEYWORD, KITTAI_SENSITIVITY};
         m_detector = kwd::KittAiKeyWordDetector::create(
-                m_AudioBuffer,
-                m_compatibleAudioFormat,
-                {m_wakeWordTrigger},
-                // Not using an empty initializer list here to account for a GCC 4.9.2 regression
-                std::unordered_set<std::shared_ptr<KeyWordDetectorStateObserverInterface>>(),
-                inputPath + RESOURCE_FILE,
-                {config},
-                2.0,
-                false);
+            m_AudioBuffer,
+            m_compatibleAudioFormat,
+            {m_wakeWordTrigger},
+            // Not using an empty initializer list here to account for a GCC 4.9.2 regression
+            std::unordered_set<std::shared_ptr<KeyWordDetectorStateObserverInterface>>(),
+            g_inputPath + RESOURCE_FILE,
+            {config},
+            2.0,
+            false);
         ASSERT_TRUE(m_detector);
 #elif KWD_SENSORY
         m_detector = kwd::SensoryKeywordDetector::create(
-                m_AudioBuffer,
-                m_compatibleAudioFormat,
-                {m_wakeWordTrigger},
-                // Not using an empty initializer list here to account for a GCC 4.9.2 regression
-                std::unordered_set<std::shared_ptr<KeyWordDetectorStateObserverInterface>>(),
-                inputPath + RESOURCE_FILE);
+            m_AudioBuffer,
+            m_compatibleAudioFormat,
+            {m_wakeWordTrigger},
+            // Not using an empty initializer list here to account for a GCC 4.9.2 regression
+            std::unordered_set<std::shared_ptr<KeyWordDetectorStateObserverInterface>>(),
+            g_inputPath + RESOURCE_FILE);
         ASSERT_TRUE(m_detector);
 #endif
 #endif
         ASSERT_TRUE(m_directiveSequencer->addDirectiveHandler(m_directiveHandler));
 
-        ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, NO_TIMEOUT_DURATION));
-
+        ASSERT_TRUE(
+            m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, NO_TIMEOUT_DURATION));
     }
 
     void TearDown() override {
         disconnect();
-        m_AudioInputProcessor->shutdown();
-        m_directiveSequencer->shutdown();
-        m_avsConnectionManager->shutdown();
-        m_stateProvider->shutdown();
-        AlexaClientSDKInit::uninitialize();
+        // Note that these nullptr checks are needed to avoid segaults if @c SetUp() failed.
+        if (m_AudioInputProcessor) {
+            m_AudioInputProcessor->shutdown();
+        }
+        if (m_directiveSequencer) {
+            m_directiveSequencer->shutdown();
+        }
+        if (m_avsConnectionManager) {
+            m_avsConnectionManager->shutdown();
+        }
+        if (m_stateProvider) {
+            m_stateProvider->shutdown();
+        }
+        if (m_userInactivityMonitor) {
+            m_userInactivityMonitor->shutdown();
+        }
+        m_context.reset();
     }
 
     /**
      * Connect to AVS.
      */
     void connect() {
-        ASSERT_TRUE(m_authObserver->waitFor(AuthObserver::State::REFRESHED))
-                << "Retrieving the auth token timed out.";
         m_avsConnectionManager->enable();
-        ASSERT_TRUE(m_connectionStatusObserver->waitFor(ConnectionStatusObserverInterface::Status::CONNECTED))
-                << "Connecting timed out.";
-        m_avsConnectionManager->synchronize();
-        ASSERT_TRUE(m_connectionStatusObserver->waitFor(ConnectionStatusObserverInterface::Status::POST_CONNECTED))
-                << "Post connecting timed out.";
+        m_context->waitForConnected();
     }
 
     /**
      * Disconnect from AVS.
      */
     void disconnect() {
-        m_avsConnectionManager->disable();
-        ASSERT_TRUE(m_connectionStatusObserver->waitFor(ConnectionStatusObserverInterface::Status::DISCONNECTED))
-                << "Connecting timed out.";
+        if (m_avsConnectionManager) {
+            m_avsConnectionManager->disable();
+            m_context->waitForDisconnected();
+        }
     }
 
     bool checkSentEventName(std::shared_ptr<TestMessageSender> connectionManager, std::string expectedName) {
@@ -549,9 +545,9 @@ protected:
             std::string eventString;
             std::string eventHeader;
             std::string eventName;
-            jsonUtils::lookupStringValue(sendParams.request->getJsonContent(), "event", &eventString);
-            jsonUtils::lookupStringValue(eventString, "header", &eventHeader);
-            jsonUtils::lookupStringValue(eventHeader, "name", &eventName);
+            jsonUtils::retrieveValue(sendParams.request->getJsonContent(), "event", &eventString);
+            jsonUtils::retrieveValue(eventString, "header", &eventHeader);
+            jsonUtils::retrieveValue(eventHeader, "name", &eventName);
             if (eventName == expectedName) {
                 return true;
             } else {
@@ -562,16 +558,14 @@ protected:
         }
     }
 
-    std::shared_ptr<AuthObserver> m_authObserver;
-    std::shared_ptr<AuthDelegate> m_authDelegate;
-    std::shared_ptr<ConnectionStatusObserver> m_connectionStatusObserver;
-    std::shared_ptr<MessageRouter> m_messageRouter;
+    /// Context for running ACL based tests.
+    std::unique_ptr<ACLTestContext> m_context;
+
     std::shared_ptr<TestMessageSender> m_avsConnectionManager;
     std::shared_ptr<TestDirectiveHandler> m_directiveHandler;
     std::shared_ptr<TestExceptionEncounteredSender> m_exceptionEncounteredSender;
     std::shared_ptr<DirectiveSequencerInterface> m_directiveSequencer;
     std::shared_ptr<MessageInterpreter> m_messageInterpreter;
-    std::shared_ptr<avsCommon::sdkInterfaces::ContextManagerInterface> m_contextManager;
     std::shared_ptr<afml::FocusManager> m_focusManager;
     std::shared_ptr<avsCommon::avs::DialogUXStateAggregator> m_dialogUXStateAggregator;
     std::shared_ptr<TestClient> m_testClient;
@@ -586,7 +580,7 @@ protected:
     std::shared_ptr<AudioProvider> m_TapToTalkAudioProvider;
     std::shared_ptr<AudioProvider> m_HoldToTalkAudioProvider;
     avsCommon::utils::AudioFormat m_compatibleAudioFormat;
-#ifdef KWD
+#if defined(KWD_KITTAI) || defined(KWD_SENSORY)
     std::shared_ptr<wakeWordTrigger> m_wakeWordTrigger;
 #ifdef KWD_KITTAI
     std::unique_ptr<kwd::KittAiKeyWordDetector> m_detector;
@@ -596,9 +590,8 @@ protected:
 #endif
 };
 
-std::vector<int16_t> readAudioFromFile(const std::string &fileName, bool* errorOccurred) {
-    const int RIFF_HEADER_SIZE = 44;
-
+template <typename T>
+std::vector<T> readAudioFromFile(const std::string& fileName, const int& headerPosition, bool* errorOccurred) {
     std::ifstream inputFile(fileName.c_str(), std::ifstream::binary);
     if (!inputFile.good()) {
         std::cout << "Couldn't open audio file!" << std::endl;
@@ -609,23 +602,24 @@ std::vector<int16_t> readAudioFromFile(const std::string &fileName, bool* errorO
     }
     inputFile.seekg(0, std::ios::end);
     int fileLengthInBytes = inputFile.tellg();
-    if (fileLengthInBytes <= RIFF_HEADER_SIZE) {
-        std::cout << "File should be larger than 44 bytes, which is the size of the RIFF header" << std::endl;
+
+    if (fileLengthInBytes <= headerPosition) {
+        std::cout << "File should be larger than header position" << std::endl;
         if (errorOccurred) {
             *errorOccurred = true;
         }
         return {};
     }
 
-    inputFile.seekg(RIFF_HEADER_SIZE, std::ios::beg);
+    inputFile.seekg(headerPosition, std::ios::beg);
 
-    int numSamples = (fileLengthInBytes - RIFF_HEADER_SIZE) / 2;
+    int numSamples = (fileLengthInBytes - headerPosition) / sizeof(T);
 
-    std::vector<int16_t> retVal(numSamples, 0);
+    std::vector<T> retVal(numSamples, 0);
 
-    inputFile.read((char *)&retVal[0], numSamples * 2);
+    inputFile.read((char*)&retVal[0], numSamples * sizeof(T));
 
-    if (inputFile.gcount() != numSamples*2) {
+    if (static_cast<size_t>(inputFile.gcount()) != numSamples * sizeof(T)) {
         std::cout << "Error reading audio file" << std::endl;
         if (errorOccurred) {
             *errorOccurred = true;
@@ -644,21 +638,22 @@ std::vector<int16_t> readAudioFromFile(const std::string &fileName, bool* errorO
  * Test AudioInputProcessor's ability to handle a simple interation triggered by a wakeword.
  *
  * To do this, audio of "Alexa, tell me a joke" is fed into a stream that is being read by a wake word engine. The
- * AudioInputProcessor is then observed to send a Recognize event to AVS which responds with a SetMute and Speak directive.
+ * AudioInputProcessor is then observed to send a Recognize event to AVS which responds with a SetMute and Speak
+ * directive.
  */
-#ifdef KWD
-TEST_F(AudioInputProcessorTest, wakeWordJoke) {
+#if defined(KWD_KITTAI) || defined(KWD_SENSORY)
+TEST_F(AudioInputProcessorTest, test_wakeWordJoke) {
     // Put audio onto the SDS saying "Alexa, Tell me a joke".
     bool error;
-    std::string file = inputPath + ALEXA_JOKE_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + ALEXA_JOKE_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     ASSERT_FALSE(audioData.empty());
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION)); 
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // The test channel client has been notified the alarm channel has been backgrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
@@ -669,23 +664,22 @@ TEST_F(AudioInputProcessorTest, wakeWordJoke) {
     // Check that a recognize event was sent.
     ASSERT_TRUE(checkSentEventName(m_avsConnectionManager, NAME_RECOGNIZE));
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION)); 
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // The test channel client has been notified the alarm channel has been foregrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::FOREGROUND);
 
     // Check that prehandle and handle for setMute and Speak has reached the test SS.
-    TestDirectiveHandler::DirectiveParams params = m_directiveHandler->waitForNext(std::chrono::seconds(LONG_TIMEOUT_DURATION));
+    TestDirectiveHandler::DirectiveParams params =
+        m_directiveHandler->waitForNext(std::chrono::seconds(LONG_TIMEOUT_DURATION));
     ASSERT_NE(params.type, TestDirectiveHandler::DirectiveParams::Type::TIMEOUT);
     while (params.type != TestDirectiveHandler::DirectiveParams::Type::TIMEOUT) {
         if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
-                params.result->setCompleted();
+            params.result->setCompleted();
         }
         params = m_directiveHandler->waitForNext(NO_TIMEOUT_DURATION);
     }
@@ -698,19 +692,19 @@ TEST_F(AudioInputProcessorTest, wakeWordJoke) {
  * To do this, audio of "Alexa, ........." is fed into a stream that is being read by a wake word engine. The
  * AudioInputProcessor is then observed to send a Recognize event to AVS which responds with no directives.
  */
-#ifdef KWD
-TEST_F(AudioInputProcessorTest, wakeWordSilence) {
+#if defined(KWD_KITTAI) || defined(KWD_SENSORY)
+TEST_F(AudioInputProcessorTest, test_wakeWordSilence) {
     // Put audio onto the SDS saying "Alexa ......".
     bool error;
-    std::string file = inputPath + ALEXA_SILENCE_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + ALEXA_SILENCE_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     ASSERT_FALSE(audioData.empty());
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION)); 
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // The test channel client has been notified the alarm channel has been backgrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
@@ -721,13 +715,11 @@ TEST_F(AudioInputProcessorTest, wakeWordSilence) {
     // Check that a recognize event was sent
     ASSERT_TRUE(checkSentEventName(m_avsConnectionManager, NAME_RECOGNIZE));
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION)); 
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // The test channel client has been notified the alarm channel has been foregrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::FOREGROUND);
@@ -745,19 +737,19 @@ TEST_F(AudioInputProcessorTest, wakeWordSilence) {
  * AudioInputProcessor is then observed to send a Recognize event to AVS which responds with a SetMute, Speak,
  * and ExpectSpeech directive. Audio of "Lions" is then fed into the stream and another recognize event is sent.
  */
-#ifdef KWD
-TEST_F(AudioInputProcessorTest, wakeWordMultiturn) {
+#if defined(KWD_KITTAI) || defined(KWD_SENSORY)
+TEST_F(AudioInputProcessorTest, test_wakeWordMultiturn) {
     // Put audio onto the SDS saying "Alexa, wikipedia".
     bool error;
-    std::string file = inputPath + ALEXA_WIKI_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + ALEXA_WIKI_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     ASSERT_FALSE(audioData.empty());
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION)); 
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // The test channel client has been notified the alarm channel has been backgrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
@@ -768,39 +760,38 @@ TEST_F(AudioInputProcessorTest, wakeWordMultiturn) {
     // Check that a recognize event was sent.
     ASSERT_TRUE(checkSentEventName(m_avsConnectionManager, NAME_RECOGNIZE));
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION)); 
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // The test channel client has been notified the alarm channel has been foregrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::FOREGROUND);
 
     // Check that prehandle and handle for setMute and Speak has reached the test SS.
-    TestDirectiveHandler::DirectiveParams params = m_directiveHandler->waitForNext(
-            std::chrono::seconds(LONG_TIMEOUT_DURATION));
+    TestDirectiveHandler::DirectiveParams params =
+        m_directiveHandler->waitForNext(std::chrono::seconds(LONG_TIMEOUT_DURATION));
     ASSERT_NE(params.type, TestDirectiveHandler::DirectiveParams::Type::TIMEOUT);
     while (params.type != TestDirectiveHandler::DirectiveParams::Type::TIMEOUT) {
         if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
-                params.result->setCompleted();
+            params.result->setCompleted();
         }
         params = m_directiveHandler->waitForNext(NO_TIMEOUT_DURATION);
     }
 
     // Check that AIP is now in EXPECTING_SPEECH state.
-    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::EXPECTING_SPEECH, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(
+        AudioInputProcessorObserverInterface::State::EXPECTING_SPEECH, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION)); 
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // Put audio onto the SDS saying "Lions".
     bool secondError;
-    std::string secondFile = inputPath + LIONS_AUDIO_FILE;
-    std::vector<int16_t> secondAudioData = readAudioFromFile(secondFile, &secondError);
+    std::string secondFile = g_inputPath + LIONS_AUDIO_FILE;
+    std::vector<int16_t> secondAudioData = readAudioFromFile<int16_t>(secondFile, RIFF_HEADER_SIZE, &secondError);
     ASSERT_FALSE(secondError);
     m_AudioBufferWriter->write(secondAudioData.data(), secondAudioData.size());
 
@@ -810,13 +801,11 @@ TEST_F(AudioInputProcessorTest, wakeWordMultiturn) {
     // The test channel client has been notified the alarm channel has been backgrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION)); 
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // Check that the test context provider was asked to provide context for the event.
     ASSERT_TRUE(m_stateProvider->checkStateRequested());
@@ -829,7 +818,7 @@ TEST_F(AudioInputProcessorTest, wakeWordMultiturn) {
     ASSERT_NE(params.type, TestDirectiveHandler::DirectiveParams::Type::TIMEOUT);
     while (params.type != TestDirectiveHandler::DirectiveParams::Type::TIMEOUT) {
         if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
-                params.result->setCompleted();
+            params.result->setCompleted();
         }
         params = m_directiveHandler->waitForNext(NO_TIMEOUT_DURATION);
     }
@@ -844,19 +833,19 @@ TEST_F(AudioInputProcessorTest, wakeWordMultiturn) {
  * and ExpectSpeech directive. Audio of "...." is then fed into the stream and another recognize event is sent
  * but no directives are given in response.
  */
-#ifdef KWD
-TEST_F(AudioInputProcessorTest, wakeWordMultiturnWithoutUserResponse) {
+#if defined(KWD_KITTAI) || defined(KWD_SENSORY)
+TEST_F(AudioInputProcessorTest, test_wakeWordMultiturnWithoutUserResponse) {
     // Put audio onto the SDS saying "Alexa, wikipedia".
     bool error;
-    std::string file = inputPath + ALEXA_WIKI_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + ALEXA_WIKI_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     ASSERT_FALSE(audioData.empty());
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-                AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // The test channel client has been notified the alarm channel has been backgrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
@@ -867,44 +856,42 @@ TEST_F(AudioInputProcessorTest, wakeWordMultiturnWithoutUserResponse) {
     // Check that a recognize event was sent
     ASSERT_TRUE(checkSentEventName(m_avsConnectionManager, NAME_RECOGNIZE));
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-                AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-                AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // The test channel client has been notified the alarm channel has been foregrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::FOREGROUND);
 
-    // Check that prehandle and handle for setMute and Speak has reached the test SS 
-    TestDirectiveHandler::DirectiveParams params = m_directiveHandler->waitForNext(
-                std::chrono::seconds(LONG_TIMEOUT_DURATION));
+    // Check that prehandle and handle for setMute and Speak has reached the test SS
+    TestDirectiveHandler::DirectiveParams params =
+        m_directiveHandler->waitForNext(std::chrono::seconds(LONG_TIMEOUT_DURATION));
 
     ASSERT_NE(params.type, TestDirectiveHandler::DirectiveParams::Type::TIMEOUT);
     while (params.type != TestDirectiveHandler::DirectiveParams::Type::TIMEOUT) {
         if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
-                std::this_thread::sleep_for(std::chrono::seconds(2));
-                params.result->setCompleted();
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            params.result->setCompleted();
         }
         params = m_directiveHandler->waitForNext(NO_TIMEOUT_DURATION);
     }
 
     // Check that AIP is now in EXPECTING_SPEECH state.
     ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::EXPECTING_SPEECH, LONG_TIMEOUT_DURATION));
+        AudioInputProcessorObserverInterface::State::EXPECTING_SPEECH, LONG_TIMEOUT_DURATION));
 
     // Put audio onto the SDS saying ".......".
     bool secondError;
-    std::string secondFile = inputPath + SILENCE_AUDIO_FILE;
-    std::vector<int16_t> secondAudioData = readAudioFromFile(secondFile, &secondError);
+    std::string secondFile = g_inputPath + SILENCE_AUDIO_FILE;
+    std::vector<int16_t> secondAudioData = readAudioFromFile<int16_t>(secondFile, RIFF_HEADER_SIZE, &secondError);
     ASSERT_FALSE(secondError);
     m_AudioBufferWriter->write(secondAudioData.data(), secondAudioData.size());
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // Check that a recognize event was sent.
     ASSERT_TRUE(checkSentEventName(m_avsConnectionManager, NAME_RECOGNIZE));
@@ -912,13 +899,11 @@ TEST_F(AudioInputProcessorTest, wakeWordMultiturnWithoutUserResponse) {
     // The test channel client has been notified the alarm channel has been backgrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-                AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-                AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // Check that the test context provider was asked to provide context for the event.
     ASSERT_TRUE(m_stateProvider->checkStateRequested());
@@ -940,22 +925,22 @@ TEST_F(AudioInputProcessorTest, wakeWordMultiturnWithoutUserResponse) {
 /**
  * Test AudioInputProcessor's ability to handle a simple interation triggered by a tap to talk button.
  *
- * To do this, audio of "Tell me a joke" is fed into a stream after button sends recognize to AudioInputProcessor. The 
- * AudioInputProcessor is then observed to send a Recognize event to AVS which responds with a SetMute and Speak 
+ * To do this, audio of "Tell me a joke" is fed into a stream after button sends recognize to AudioInputProcessor. The
+ * AudioInputProcessor is then observed to send a Recognize event to AVS which responds with a SetMute and Speak
  * directive.
  */
-TEST_F(AudioInputProcessorTest, tapToTalkJoke) {
+TEST_F(AudioInputProcessorTest, DISABLED_test_tapToTalkJoke) {
     // Signal to the AIP to start recognizing.
     ASSERT_TRUE(m_tapToTalkButton->startRecognizing(m_AudioInputProcessor, m_TapToTalkAudioProvider));
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION)); 
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // Put audio onto the SDS saying "Tell me a joke".
     bool error;
-    std::string file = inputPath + JOKE_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + JOKE_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     ASSERT_FALSE(audioData.empty());
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
@@ -963,13 +948,11 @@ TEST_F(AudioInputProcessorTest, tapToTalkJoke) {
     // The test channel client has been notified the alarm channel has been backgrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // Check that the test context provider was asked to provide context for the event.
     ASSERT_TRUE(m_stateProvider->checkStateRequested());
@@ -985,10 +968,57 @@ TEST_F(AudioInputProcessorTest, tapToTalkJoke) {
     ASSERT_NE(params.type, TestDirectiveHandler::DirectiveParams::Type::TIMEOUT);
     while (params.type != TestDirectiveHandler::DirectiveParams::Type::TIMEOUT) {
         if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
-                params.result->setCompleted();
+            params.result->setCompleted();
         }
         params = m_directiveHandler->waitForNext(NO_TIMEOUT_DURATION);
     }
+}
+
+// ACSDK-2410 Disable this test temporarily due to running into issues with Raspberry Pi
+TEST_F(AudioInputProcessorTest, DISABLED_test_tapToTalkTimeOpus) {
+    m_compatibleAudioFormat.sampleRateHz = COMPATIBLE_SAMPLE_RATE_OPUS_32;
+    m_compatibleAudioFormat.numChannels = COMPATIBLE_NUM_CHANNELS;
+    m_compatibleAudioFormat.endianness = COMPATIBLE_ENDIANNESS;
+    m_compatibleAudioFormat.encoding = avsCommon::utils::AudioFormat::Encoding::OPUS;
+
+    bool alwaysReadable = true;
+    bool canOverride = true;
+    bool canBeOverridden = true;
+    std::shared_ptr<AudioProvider> tapToTalkAudioProvider;
+    tapToTalkAudioProvider = std::make_shared<AudioProvider>(
+        m_AudioBuffer, m_compatibleAudioFormat, ASRProfile::NEAR_FIELD, alwaysReadable, canOverride, !canBeOverridden);
+    // Signal to the AIP to start recognizing.
+    ASSERT_TRUE(m_tapToTalkButton->startRecognizing(m_AudioInputProcessor, tapToTalkAudioProvider));
+
+    // Check that AIP is now in RECOGNIZING state.
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+
+    // Put audio onto the SDS saying "What time is it?".
+    bool error;
+    std::string file = g_inputPath + TIME_AUDIO_FILE_OPUS;
+    int headerSize = 0;
+    std::vector<uint8_t> audioData = readAudioFromFile<uint8_t>(file, headerSize, &error);
+    ASSERT_FALSE(audioData.empty());
+    m_AudioBufferWriter->write(audioData.data(), audioData.size());
+
+    // The test channel client has been notified the alarm channel has been backgrounded.
+    ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
+
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
+
+    // Check that AIP is in an IDLE state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+
+    // Check that the test context provider was asked to provide context for the event.
+    ASSERT_TRUE(m_stateProvider->checkStateRequested());
+
+    // The test channel client has been notified the alarm channel has been foregrounded.
+    ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::FOREGROUND);
+
+    // Check that a recognize event was sent.
+    ASSERT_TRUE(checkSentEventName(m_avsConnectionManager, NAME_RECOGNIZE));
 }
 
 /**
@@ -997,18 +1027,18 @@ TEST_F(AudioInputProcessorTest, tapToTalkJoke) {
  * To do this, audio of "....." is fed into a stream after button sends recognize to AudioInputProcessor. The
  * AudioInputProcessor is then observed to send a Recognize event to AVS which responds no directives.
  */
-TEST_F(AudioInputProcessorTest, tapToTalkSilence) {
+TEST_F(AudioInputProcessorTest, test_tapToTalkSilence) {
     // Signal to the AIP to start recognizing.
     ASSERT_TRUE(m_tapToTalkButton->startRecognizing(m_AudioInputProcessor, m_TapToTalkAudioProvider));
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // Put audio onto the SDS saying ".......".
     bool error;
-    std::string file = inputPath + SILENCE_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + SILENCE_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     ASSERT_FALSE(audioData.empty());
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
@@ -1016,13 +1046,11 @@ TEST_F(AudioInputProcessorTest, tapToTalkSilence) {
     // The test channel client has been notified the alarm channel has been backgrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // Check that the test context provider was asked to provide context for the event.
     ASSERT_TRUE(m_stateProvider->checkStateRequested());
@@ -1044,15 +1072,15 @@ TEST_F(AudioInputProcessorTest, tapToTalkSilence) {
  * To do this, no audio is fed into a stream after button sends recognize to AudioInputProcessor. The
  * AudioInputProcessor is then observed to send a Recognize event to AVS which responds with no directive.
  */
-TEST_F(AudioInputProcessorTest, tapToTalkNoAudio) {
+TEST_F(AudioInputProcessorTest, test_tapToTalkNoAudio) {
     // Signal to the AIP to start recognizing.
     ASSERT_TRUE(m_tapToTalkButton->startRecognizing(m_AudioInputProcessor, m_TapToTalkAudioProvider));
 
     // Put no audio onto the SDS.
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // The test channel client has been notified the alarm channel has been backgrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
@@ -1060,7 +1088,7 @@ TEST_F(AudioInputProcessorTest, tapToTalkNoAudio) {
     // Check that a recognize event was sent
     ASSERT_TRUE(checkSentEventName(m_avsConnectionManager, NAME_RECOGNIZE));
 
-    //Check that the test context provider was asked to provide context for the event.
+    // Check that the test context provider was asked to provide context for the event.
     ASSERT_TRUE(m_stateProvider->checkStateRequested());
 
     // The test channel client has not changed.
@@ -1074,23 +1102,23 @@ TEST_F(AudioInputProcessorTest, tapToTalkNoAudio) {
 /**
  * Test AudioInputProcessor's ability to handle an interation triggered by a tap to talk button with wake word.
  *
- * To do this, audio of "Alexa, Tell me a joke" is fed into a stream after button sends recognize to 
+ * To do this, audio of "Alexa, Tell me a joke" is fed into a stream after button sends recognize to
  * AudioInputProcessor. The AudioInputProcessor is then observed to send only one Recognize event to AVS which responds
  * with a SetMute and Speak directive.
  */
-#ifdef KWD
-TEST_F(AudioInputProcessorTest, tapToTalkWithWakeWordConflict) {
+#if defined(KWD_KITTAI) || defined(KWD_SENSORY)
+TEST_F(AudioInputProcessorTest, test_tapToTalkWithWakeWordConflict) {
     // Signal to the AIP to start recognizing.
     ASSERT_TRUE(m_tapToTalkButton->startRecognizing(m_AudioInputProcessor, m_TapToTalkAudioProvider));
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // Put audio onto the SDS saying "Alexa, Tell me a joke".
     bool error;
-    std::string file = inputPath + ALEXA_JOKE_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + ALEXA_JOKE_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     ASSERT_FALSE(audioData.empty());
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
@@ -1098,13 +1126,11 @@ TEST_F(AudioInputProcessorTest, tapToTalkWithWakeWordConflict) {
     // The test channel client has been notified the alarm channel has been backgrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // Check that the test context provider was asked to provide context for the event.
     ASSERT_TRUE(m_stateProvider->checkStateRequested());
@@ -1120,7 +1146,7 @@ TEST_F(AudioInputProcessorTest, tapToTalkWithWakeWordConflict) {
     ASSERT_NE(params.type, TestDirectiveHandler::DirectiveParams::Type::TIMEOUT);
     while (params.type != TestDirectiveHandler::DirectiveParams::Type::TIMEOUT) {
         if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
-                params.result->setCompleted();
+            params.result->setCompleted();
         }
         params = m_directiveHandler->waitForNext(NO_TIMEOUT_DURATION);
     }
@@ -1134,18 +1160,18 @@ TEST_F(AudioInputProcessorTest, tapToTalkWithWakeWordConflict) {
  * AudioInputProcessor is then observed to send a Recognize event to AVS which responds with a SetMute, Speak,
  * and ExpectSpeech directive. Audio of "Lions" is then fed into the stream and another recognize event is sent.
  */
-TEST_F(AudioInputProcessorTest, tapToTalkMultiturn) {
+TEST_F(AudioInputProcessorTest, test_tapToTalkMultiturn) {
     // Signal to the AIP to start recognizing.
     ASSERT_TRUE(m_tapToTalkButton->startRecognizing(m_AudioInputProcessor, m_TapToTalkAudioProvider));
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // Put audio onto the SDS saying "Wikipedia".
     bool error;
-    std::string file = inputPath + WIKI_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + WIKI_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     ASSERT_FALSE(audioData.empty());
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
@@ -1153,13 +1179,11 @@ TEST_F(AudioInputProcessorTest, tapToTalkMultiturn) {
     // The test channel client has been notified the alarm channel has been backgrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // Check that the test context provider was asked to provide context for the event.
     ASSERT_TRUE(m_stateProvider->checkStateRequested());
@@ -1176,36 +1200,34 @@ TEST_F(AudioInputProcessorTest, tapToTalkMultiturn) {
     while (params.type != TestDirectiveHandler::DirectiveParams::Type::TIMEOUT) {
         if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
-                params.result->setCompleted();
+            params.result->setCompleted();
         }
         params = m_directiveHandler->waitForNext(SHORT_TIMEOUT_DURATION);
     }
 
     // Check that AIP is now in EXPECTING_SPEECH state.
     ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::EXPECTING_SPEECH, SHORT_TIMEOUT_DURATION));
+        AudioInputProcessorObserverInterface::State::EXPECTING_SPEECH, SHORT_TIMEOUT_DURATION));
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, SHORT_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, SHORT_TIMEOUT_DURATION));
 
     // Put audio onto the SDS saying "Lions".
     bool secondError;
-    std::string secondFile = inputPath + LIONS_AUDIO_FILE;
-    std::vector<int16_t> secondAudioData = readAudioFromFile(secondFile, &secondError);
+    std::string secondFile = g_inputPath + LIONS_AUDIO_FILE;
+    std::vector<int16_t> secondAudioData = readAudioFromFile<int16_t>(secondFile, RIFF_HEADER_SIZE, &secondError);
     ASSERT_FALSE(secondError);
     m_AudioBufferWriter->write(secondAudioData.data(), secondAudioData.size());
 
     // The test channel client has been notified the alarm channel has been backgrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // The test channel client has been notified the alarm channel has been foregrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::FOREGROUND);
@@ -1218,14 +1240,14 @@ TEST_F(AudioInputProcessorTest, tapToTalkMultiturn) {
     ASSERT_NE(params.type, TestDirectiveHandler::DirectiveParams::Type::TIMEOUT);
     while (params.type != TestDirectiveHandler::DirectiveParams::Type::TIMEOUT) {
         if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
-                params.result->setCompleted();
+            params.result->setCompleted();
         }
         params = m_directiveHandler->waitForNext(NO_TIMEOUT_DURATION);
     }
 }
 
 /**
- * Test AudioInputProcessor's ability to handle a multiturn interation triggered by a tap to talk button but no user 
+ * Test AudioInputProcessor's ability to handle a multiturn interation triggered by a tap to talk button but no user
  * response.
  *
  * To do this, audio of "Wikipedia" is fed into a stream after button sends recognize to AudioInputProcessor. The
@@ -1233,18 +1255,18 @@ TEST_F(AudioInputProcessorTest, tapToTalkMultiturn) {
  * and ExpectSpeech directive. Audio of "...." is then fed into the stream and another recognize event is sent
  * but no directives are given in response.
  */
-TEST_F(AudioInputProcessorTest, tapToTalkMultiturnWithoutUserResponse) {
+TEST_F(AudioInputProcessorTest, test_tapToTalkMultiturnWithoutUserResponse) {
     // Signal to the AIP to start recognizing.
     ASSERT_TRUE(m_tapToTalkButton->startRecognizing(m_AudioInputProcessor, m_TapToTalkAudioProvider));
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // Put audio onto the SDS saying "Wikipedia".
     bool error;
-    std::string file = inputPath + WIKI_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + WIKI_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     ASSERT_FALSE(audioData.empty());
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
@@ -1252,9 +1274,8 @@ TEST_F(AudioInputProcessorTest, tapToTalkMultiturnWithoutUserResponse) {
     // The test channel client has been notified the alarm channel has been backgrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that the test context provider was asked to provide context for the event.
     ASSERT_TRUE(m_stateProvider->checkStateRequested());
@@ -1265,39 +1286,38 @@ TEST_F(AudioInputProcessorTest, tapToTalkMultiturnWithoutUserResponse) {
     // Check that a recognize event was sent.
     ASSERT_TRUE(checkSentEventName(m_avsConnectionManager, NAME_RECOGNIZE));
 
-    bool expectSpeechFound = true; 
+    bool expectSpeechFound = true;
     TestDirectiveHandler::DirectiveParams params;
-    while (expectSpeechFound){
-
+    while (expectSpeechFound) {
         // Check that AIP is in an IDLE state before starting.
-        ASSERT_TRUE(m_StateObserver->checkState(
-                AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+        ASSERT_TRUE(
+            m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
         // Check that prehandle and handle for setMute and Speak has reached the test SS.
         params = m_directiveHandler->waitForNext(SHORT_TIMEOUT_DURATION);
         ASSERT_NE(params.type, TestDirectiveHandler::DirectiveParams::Type::TIMEOUT);
         while (params.type != TestDirectiveHandler::DirectiveParams::Type::TIMEOUT) {
-             if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
-                 std::this_thread::sleep_for(std::chrono::seconds(2));
-                     params.result->setCompleted();
-             }
+            if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                params.result->setCompleted();
+            }
             params = m_directiveHandler->waitForNext(SHORT_TIMEOUT_DURATION);
         }
 
         // Check that AIP is now in EXPECTING_SPEECH state.
         ASSERT_TRUE(m_StateObserver->checkState(
-                AudioInputProcessorObserverInterface::State::EXPECTING_SPEECH, SHORT_TIMEOUT_DURATION));
+            AudioInputProcessorObserverInterface::State::EXPECTING_SPEECH, SHORT_TIMEOUT_DURATION));
 
         // Put audio onto the SDS saying ".......".
         bool secondError;
-        std::string secondFile = inputPath + SILENCE_AUDIO_FILE;
-        std::vector<int16_t> secondAudioData = readAudioFromFile(secondFile, &secondError);
+        std::string secondFile = g_inputPath + SILENCE_AUDIO_FILE;
+        std::vector<int16_t> secondAudioData = readAudioFromFile<int16_t>(secondFile, RIFF_HEADER_SIZE, &secondError);
         ASSERT_FALSE(secondError);
         m_AudioBufferWriter->write(secondAudioData.data(), secondAudioData.size());
 
         // Check that AIP is now in RECOGNIZING state.
         ASSERT_TRUE(m_StateObserver->checkState(
-                AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
         // Check that a recognize event was sent.
         ASSERT_TRUE(checkSentEventName(m_avsConnectionManager, NAME_RECOGNIZE));
@@ -1305,13 +1325,13 @@ TEST_F(AudioInputProcessorTest, tapToTalkMultiturnWithoutUserResponse) {
         // The test channel client has been notified the alarm channel has been backgrounded.
         ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
 
-        // Check that AIP is in BUSY state. 
-        ASSERT_TRUE(m_StateObserver->checkState(
-                AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+        // Check that AIP is in BUSY state.
+        ASSERT_TRUE(
+            m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
         // Check that AIP is in an IDLE state.
-        ASSERT_TRUE(m_StateObserver->checkState(
-                AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+        ASSERT_TRUE(
+            m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
         // Check that the test context provider was asked to provide context for the event.
         ASSERT_TRUE(m_stateProvider->checkStateRequested());
@@ -1342,7 +1362,7 @@ TEST_F(AudioInputProcessorTest, tapToTalkMultiturnWithoutUserResponse) {
  * To do this, audio of "Tell me a joke" is fed into a stream after button sends recognize to AudioInputProcessor. The
  * button then sends a reset command and no recognize event is sent.
  */
-TEST_F(AudioInputProcessorTest, tapToTalkCancel) {
+TEST_F(AudioInputProcessorTest, test_tapToTalkCancel) {
     // Signal to the AIP to start recognizing.
     ASSERT_TRUE(m_tapToTalkButton->startRecognizing(m_AudioInputProcessor, m_TapToTalkAudioProvider));
 
@@ -1350,20 +1370,19 @@ TEST_F(AudioInputProcessorTest, tapToTalkCancel) {
     m_AudioInputProcessor->resetState();
 
     // Check that AIP was briefly in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // Put audio onto the SDS saying "Tell me a joke".
     bool error;
-    std::string file = inputPath + JOKE_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + JOKE_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     ASSERT_FALSE(audioData.empty());
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // Check that no directives arrived to the fake SS.
     TestDirectiveHandler::DirectiveParams params = m_directiveHandler->waitForNext(NO_TIMEOUT_DURATION);
@@ -1373,23 +1392,23 @@ TEST_F(AudioInputProcessorTest, tapToTalkCancel) {
 /**
  * Test AudioInputProcessor's ability to handle a simple interation triggered by a hold to talk button.
  *
- * To do this, audio of "Tell me a joke" is fed into a stream after button sends recognize to AudioInputProcessor. The 
- * AudioInputProcessor is then observed to send a Recognize event to AVS which responds with a SetMute and Speak 
+ * To do this, audio of "Tell me a joke" is fed into a stream after button sends recognize to AudioInputProcessor. The
+ * AudioInputProcessor is then observed to send a Recognize event to AVS which responds with a SetMute and Speak
  * directive.
  */
-TEST_F(AudioInputProcessorTest, holdToTalkJoke) {
+TEST_F(AudioInputProcessorTest, test_holdToTalkJoke) {
     // Signal to the AIP to start recognizing.
     ASSERT_NE(nullptr, m_HoldToTalkAudioProvider);
     ASSERT_TRUE(m_holdToTalkButton->startRecognizing(m_AudioInputProcessor, m_HoldToTalkAudioProvider));
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // Put audio onto the SDS saying "Tell me a joke".
     bool error;
-    std::string file = inputPath + JOKE_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + JOKE_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     ASSERT_FALSE(audioData.empty());
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
@@ -1400,13 +1419,11 @@ TEST_F(AudioInputProcessorTest, holdToTalkJoke) {
     // Stop holding the button.
     ASSERT_TRUE(m_holdToTalkButton->stopRecognizing(m_AudioInputProcessor));
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // Check that the test context provider was asked to provide context for the event.
     ASSERT_TRUE(m_stateProvider->checkStateRequested());
@@ -1422,7 +1439,7 @@ TEST_F(AudioInputProcessorTest, holdToTalkJoke) {
     ASSERT_NE(params.type, TestDirectiveHandler::DirectiveParams::Type::TIMEOUT);
     while (params.type != TestDirectiveHandler::DirectiveParams::Type::TIMEOUT) {
         if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
-                params.result->setCompleted();
+            params.result->setCompleted();
         }
         params = m_directiveHandler->waitForNext(NO_TIMEOUT_DURATION);
     }
@@ -1435,18 +1452,18 @@ TEST_F(AudioInputProcessorTest, holdToTalkJoke) {
  * AudioInputProcessor is then observed to send a Recognize event to AVS which responds with a SetMute, Speak,
  * and ExpectSpeech directive. Audio of "Lions" is then fed into the stream and another recognize event is sent.
  */
-TEST_F(AudioInputProcessorTest, holdToTalkMultiturn) {
+TEST_F(AudioInputProcessorTest, test_holdToTalkMultiturn) {
     // Signal to the AIP to start recognizing.
     ASSERT_TRUE(m_holdToTalkButton->startRecognizing(m_AudioInputProcessor, m_HoldToTalkAudioProvider));
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // Put audio onto the SDS saying "Wikipedia".
     bool error;
-    std::string file = inputPath + WIKI_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + WIKI_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     ASSERT_FALSE(audioData.empty());
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
@@ -1457,13 +1474,11 @@ TEST_F(AudioInputProcessorTest, holdToTalkMultiturn) {
     // Stop holding the button.
     ASSERT_TRUE(m_holdToTalkButton->stopRecognizing(m_AudioInputProcessor));
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // Check that the test context provider was asked to provide context for the event.
     ASSERT_TRUE(m_stateProvider->checkStateRequested());
@@ -1480,28 +1495,28 @@ TEST_F(AudioInputProcessorTest, holdToTalkMultiturn) {
     while (params.type != TestDirectiveHandler::DirectiveParams::Type::TIMEOUT) {
         if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
-                params.result->setCompleted();
+            params.result->setCompleted();
         }
         params = m_directiveHandler->waitForNext(SHORT_TIMEOUT_DURATION);
     }
 
     // Check that AIP is now in EXPECTING_SPEECH state.
     ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::EXPECTING_SPEECH, LONG_TIMEOUT_DURATION));
+        AudioInputProcessorObserverInterface::State::EXPECTING_SPEECH, LONG_TIMEOUT_DURATION));
 
     // Signal to the AIP to start recognizing.
     ASSERT_TRUE(m_holdToTalkButton->startRecognizing(m_AudioInputProcessor, m_HoldToTalkAudioProvider));
 
     // Put audio onto the SDS of "Lions".
     bool secondError;
-    file = inputPath + LIONS_AUDIO_FILE;
-    std::vector<int16_t> secondAudioData = readAudioFromFile(file, &secondError);
+    file = g_inputPath + LIONS_AUDIO_FILE;
+    std::vector<int16_t> secondAudioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &secondError);
     ASSERT_FALSE(secondError);
     m_AudioBufferWriter->write(secondAudioData.data(), secondAudioData.size());
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // The test channel client has been notified the alarm channel has been backgrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::BACKGROUND);
@@ -1509,13 +1524,11 @@ TEST_F(AudioInputProcessorTest, holdToTalkMultiturn) {
     // Stop holding the button.
     ASSERT_TRUE(m_holdToTalkButton->stopRecognizing(m_AudioInputProcessor));
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // The test channel client has been notified the alarm channel has been foregrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(LONG_TIMEOUT_DURATION), FocusState::FOREGROUND);
@@ -1529,32 +1542,33 @@ TEST_F(AudioInputProcessorTest, holdToTalkMultiturn) {
     ASSERT_NE(params.type, TestDirectiveHandler::DirectiveParams::Type::TIMEOUT);
     while (params.type != TestDirectiveHandler::DirectiveParams::Type::TIMEOUT) {
         if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
-                params.result->setCompleted();
+            params.result->setCompleted();
         }
         params = m_directiveHandler->waitForNext(NO_TIMEOUT_DURATION);
     }
 }
 
 /**
- * Test AudioInputProcessor's ability to handle a multiturn interation triggered by a hold to talk button but no user response.
+ * Test AudioInputProcessor's ability to handle a multiturn interation triggered by a hold to talk button but no user
+ * response.
  *
  * To do this, audio of "Wikipedia" is fed into a stream after button sends recognize to AudioInputProcessor. The
  * AudioInputProcessor is then observed to send a Recognize event to AVS which responds with a SetMute, Speak,
  * and ExpectSpeech directive. Audio of "...." is then fed into the stream and another recognize event is sent
  * but no directives are given in response.
  */
-TEST_F(AudioInputProcessorTest, holdToTalkMultiTurnWithSilence) {
+TEST_F(AudioInputProcessorTest, test_holdToTalkMultiTurnWithSilence) {
     // Signal to the AIP to start recognizing.
     ASSERT_TRUE(m_holdToTalkButton->startRecognizing(m_AudioInputProcessor, m_HoldToTalkAudioProvider));
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // Put audio onto the SDS saying "Wikipedia".
     bool error;
-    std::string file = inputPath + WIKI_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + WIKI_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     ASSERT_FALSE(audioData.empty());
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
@@ -1565,9 +1579,8 @@ TEST_F(AudioInputProcessorTest, holdToTalkMultiTurnWithSilence) {
     // Stop holding the button.
     ASSERT_TRUE(m_holdToTalkButton->stopRecognizing(m_AudioInputProcessor));
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that the test context provider was asked to provide context for the event.
     ASSERT_TRUE(m_stateProvider->checkStateRequested());
@@ -1578,12 +1591,12 @@ TEST_F(AudioInputProcessorTest, holdToTalkMultiTurnWithSilence) {
     // Check that a recognize event was sent.
     ASSERT_TRUE(checkSentEventName(m_avsConnectionManager, NAME_RECOGNIZE));
 
-    bool expectSpeechFound = true; 
+    bool expectSpeechFound = true;
     TestDirectiveHandler::DirectiveParams params;
-    while (expectSpeechFound){
+    while (expectSpeechFound) {
         // Check that AIP is in an IDLE state before starting.
-        ASSERT_TRUE(m_StateObserver->checkState(
-                AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+        ASSERT_TRUE(
+            m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
         // Check that prehandle and handle for setMute and Speak has reached the test SS.
         params = m_directiveHandler->waitForNext(LONG_TIMEOUT_DURATION);
@@ -1591,31 +1604,30 @@ TEST_F(AudioInputProcessorTest, holdToTalkMultiTurnWithSilence) {
         ASSERT_NE(params.type, TestDirectiveHandler::DirectiveParams::Type::TIMEOUT);
 
         while (params.type != TestDirectiveHandler::DirectiveParams::Type::TIMEOUT) {
-             if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
-                 std::this_thread::sleep_for(std::chrono::seconds(2));
-                     params.result->setCompleted();
-             }
+            if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                params.result->setCompleted();
+            }
             params = m_directiveHandler->waitForNext(SHORT_TIMEOUT_DURATION);
-
         }
 
         // Check that AIP is now in EXPECTING_SPEECH state.
         ASSERT_TRUE(m_StateObserver->checkState(
-                AudioInputProcessorObserverInterface::State::EXPECTING_SPEECH, SHORT_TIMEOUT_DURATION));
+            AudioInputProcessorObserverInterface::State::EXPECTING_SPEECH, SHORT_TIMEOUT_DURATION));
 
         // Signal to the AIP to start recognizing.
         ASSERT_TRUE(m_holdToTalkButton->startRecognizing(m_AudioInputProcessor, m_HoldToTalkAudioProvider));
 
         // Put audio onto the SDS saying ".......".
         bool secondError;
-        std::string secondFile = inputPath + SILENCE_AUDIO_FILE;
-        std::vector<int16_t> secondAudioData = readAudioFromFile(secondFile, &secondError);
+        std::string secondFile = g_inputPath + SILENCE_AUDIO_FILE;
+        std::vector<int16_t> secondAudioData = readAudioFromFile<int16_t>(secondFile, RIFF_HEADER_SIZE, &secondError);
         ASSERT_FALSE(secondError);
         m_AudioBufferWriter->write(secondAudioData.data(), secondAudioData.size());
-     
+
         // Check that AIP is now in RECOGNIZING state.
         ASSERT_TRUE(m_StateObserver->checkState(
-                AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
         // Stop holding the button.
         ASSERT_TRUE(m_holdToTalkButton->stopRecognizing(m_AudioInputProcessor));
@@ -1626,13 +1638,13 @@ TEST_F(AudioInputProcessorTest, holdToTalkMultiTurnWithSilence) {
         // The test channel client has been notified the alarm channel has been backgrounded.
         ASSERT_EQ(m_testClient->waitForFocusChange(NO_TIMEOUT_DURATION), FocusState::BACKGROUND);
 
-        // Check that AIP is in BUSY state. 
-        ASSERT_TRUE(m_StateObserver->checkState(
-                AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+        // Check that AIP is in BUSY state.
+        ASSERT_TRUE(
+            m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
         // Check that AIP is in an IDLE state.
-        ASSERT_TRUE(m_StateObserver->checkState(
-                AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+        ASSERT_TRUE(
+            m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
         // Check that the test context provider was asked to provide context for the event.
         ASSERT_TRUE(m_stateProvider->checkStateRequested());
@@ -1658,25 +1670,26 @@ TEST_F(AudioInputProcessorTest, holdToTalkMultiTurnWithSilence) {
 }
 
 /**
- * Test AudioInputProcessor's ability to handle a multiturn interation triggered by a hold to talk button that times out.
+ * Test AudioInputProcessor's ability to handle a multiturn interation triggered by a hold to talk button that times
+ * out.
  *
  * To do this, audio of "Wikipedia" is fed into a stream after button sends recognize to AudioInputProcessor. The
  * AudioInputProcessor is then observed to send a Recognize event to AVS which responds with a SetMute, Speak,
  * and ExpectSpeech directive. The button does not trigger another recognize so no recognize event is sent
  * and no directives are given in response. ExpectSpeechTimedOut event is observed to be sent.
  */
-TEST_F(AudioInputProcessorTest, holdToTalkMultiturnWithTimeOut) {
+TEST_F(AudioInputProcessorTest, test_holdToTalkMultiturnWithTimeOut) {
     // Signal to the AIP to start recognizing.
     ASSERT_TRUE(m_holdToTalkButton->startRecognizing(m_AudioInputProcessor, m_HoldToTalkAudioProvider));
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // Put audio onto the SDS saying "Wikipedia".
     bool error;
-    std::string file = inputPath + WIKI_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + WIKI_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     ASSERT_FALSE(audioData.empty());
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
@@ -1687,13 +1700,11 @@ TEST_F(AudioInputProcessorTest, holdToTalkMultiturnWithTimeOut) {
     // Stop holding the button.
     ASSERT_TRUE(m_holdToTalkButton->stopRecognizing(m_AudioInputProcessor));
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // Check that the test context provider was asked to provide context for the event.
     ASSERT_TRUE(m_stateProvider->checkStateRequested());
@@ -1710,7 +1721,7 @@ TEST_F(AudioInputProcessorTest, holdToTalkMultiturnWithTimeOut) {
     while (params.type != TestDirectiveHandler::DirectiveParams::Type::TIMEOUT) {
         if (params.isHandle() && params.directive->getName() == NAME_SPEAK) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
-                params.result->setCompleted();
+            params.result->setCompleted();
         }
         params = m_directiveHandler->waitForNext(SHORT_TIMEOUT_DURATION);
     }
@@ -1719,14 +1730,13 @@ TEST_F(AudioInputProcessorTest, holdToTalkMultiturnWithTimeOut) {
 
     // Check that AIP is now in EXPECTING_SPEECH state.
     ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::EXPECTING_SPEECH, LONG_TIMEOUT_DURATION));
+        AudioInputProcessorObserverInterface::State::EXPECTING_SPEECH, LONG_TIMEOUT_DURATION));
 
     // The test channel client has stayed foregrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(SHORT_TIMEOUT_DURATION), FocusState::NONE);
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // Check that ExpectSpeechTimeOut event has been sent.
     ASSERT_TRUE(checkSentEventName(m_avsConnectionManager, NAME_EXPECT_SPEECH_TIMED_OUT));
@@ -1738,13 +1748,13 @@ TEST_F(AudioInputProcessorTest, holdToTalkMultiturnWithTimeOut) {
  * To do this, no audio is fed into a stream after button sends recognize to AudioInputProcessor. The
  * AudioInputProcessor is then observed to send a Recognize event to AVS which responds with no directive.
  */
-TEST_F(AudioInputProcessorTest, holdToTalkNoAudio) {
+TEST_F(AudioInputProcessorTest, test_holdToTalkNoAudio) {
     // Signal to the AIP to start recognizing.
     ASSERT_TRUE(m_holdToTalkButton->startRecognizing(m_AudioInputProcessor, m_HoldToTalkAudioProvider));
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // Write nothing to the SDS.
 
@@ -1754,13 +1764,11 @@ TEST_F(AudioInputProcessorTest, holdToTalkNoAudio) {
     // Stop holding the button.
     ASSERT_TRUE(m_holdToTalkButton->stopRecognizing(m_AudioInputProcessor));
 
-    // Check that AIP is in BUSY state. 
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION)); 
+    // Check that AIP is in BUSY state.
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::BUSY, LONG_TIMEOUT_DURATION));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // Check that the test context provider was asked to provide context for the event.
     ASSERT_TRUE(m_stateProvider->checkStateRequested());
@@ -1782,22 +1790,22 @@ TEST_F(AudioInputProcessorTest, holdToTalkNoAudio) {
  * To do this, audio of "Tell me a joke" is fed into a stream after button sends recognize to AudioInputProcessor. The
  * button then sends a cancel command and no recognize event is sent.
  */
-TEST_F(AudioInputProcessorTest, holdToTalkCancel) {
+TEST_F(AudioInputProcessorTest, test_holdToTalkCancel) {
     // Signal to the AIP to start recognizing.
     ASSERT_NE(nullptr, m_HoldToTalkAudioProvider);
     ASSERT_TRUE(m_holdToTalkButton->startRecognizing(m_AudioInputProcessor, m_HoldToTalkAudioProvider));
 
     // Check that AIP is now in RECOGNIZING state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(
+        m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::RECOGNIZING, LONG_TIMEOUT_DURATION));
 
     // Cancel the recognize.
     m_AudioInputProcessor->resetState();
 
     // Put audio onto the SDS saying "Tell me a joke".
     bool error;
-    std::string file = inputPath + JOKE_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + JOKE_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     ASSERT_FALSE(audioData.empty());
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
@@ -1806,8 +1814,7 @@ TEST_F(AudioInputProcessorTest, holdToTalkCancel) {
     ASSERT_FALSE(m_holdToTalkButton->stopRecognizing(m_AudioInputProcessor));
 
     // Check that AIP is in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, LONG_TIMEOUT_DURATION));
 
     // Check that the test context provider was not asked to provide context for the event.
     ASSERT_TRUE(m_stateProvider->checkStateRequested());
@@ -1826,20 +1833,20 @@ TEST_F(AudioInputProcessorTest, holdToTalkCancel) {
  * To do this, audio of "Tell me a joke" is fed into a stream that is being read by a wake word engine. The
  * lack of the wakeword or button-initiated recognize results in no recognize event being sent.
  */
-TEST_F(AudioInputProcessorTest, audioWithoutAnyTrigger) {
+TEST_F(AudioInputProcessorTest, test_audioWithoutAnyTrigger) {
     // Put audio onto the SDS saying "Tell me a joke" without a trigger.
     bool error;
-    std::string file = inputPath + JOKE_AUDIO_FILE;
-    std::vector<int16_t> audioData = readAudioFromFile(file, &error);
+    std::string file = g_inputPath + JOKE_AUDIO_FILE;
+    std::vector<int16_t> audioData = readAudioFromFile<int16_t>(file, RIFF_HEADER_SIZE, &error);
     ASSERT_FALSE(error);
     m_AudioBufferWriter->write(audioData.data(), audioData.size());
 
     // Check that AIP is still in an IDLE state.
-    ASSERT_TRUE(m_StateObserver->checkState(
-            AudioInputProcessorObserverInterface::State::IDLE, SHORT_TIMEOUT_DURATION));
+    ASSERT_TRUE(m_StateObserver->checkState(AudioInputProcessorObserverInterface::State::IDLE, SHORT_TIMEOUT_DURATION));
 
-    // Check that the test context provider was not asked to provide context for the event.
-    ASSERT_FALSE(m_stateProvider->checkStateRequested());
+    // Check that the test context provider was asked to provide context as the post-connect objects would have fetched
+    // context to send StateSynchronizer event.
+    ASSERT_TRUE(m_stateProvider->checkStateRequested());
 
     // The test channel client has been not notified the alarm channel has been foregrounded.
     ASSERT_EQ(m_testClient->waitForFocusChange(SHORT_TIMEOUT_DURATION), FocusState::NONE);
@@ -1849,22 +1856,20 @@ TEST_F(AudioInputProcessorTest, audioWithoutAnyTrigger) {
     ASSERT_EQ(params.type, TestDirectiveHandler::DirectiveParams::Type::TIMEOUT);
 }
 
-} // namespace test
-} // namespace integration
-} // namespace alexaClientSDK
+}  // namespace test
+}  // namespace integration
+}  // namespace alexaClientSDK
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     if (argc < 3) {
-        std::cerr << "USAGE: AudioInputProcessorTest <path_to_AlexaClientSDKConfig.json> <path_to_inputs_folder>"
-                << std::endl;
+        std::cerr << "USAGE: " << std::string(argv[0]) << " <path_to_AlexaClientSDKConfig.json> <path_to_inputs_folder>"
+                  << std::endl;
         return 1;
 
     } else {
-        alexaClientSDK::integration::test::configPath = std::string(argv[1]);
-        alexaClientSDK::integration::test::inputPath = std::string(argv[2]);
+        alexaClientSDK::integration::test::g_configPath = std::string(argv[1]);
+        alexaClientSDK::integration::test::g_inputPath = std::string(argv[2]);
         return RUN_ALL_TESTS();
     }
 }
-
-

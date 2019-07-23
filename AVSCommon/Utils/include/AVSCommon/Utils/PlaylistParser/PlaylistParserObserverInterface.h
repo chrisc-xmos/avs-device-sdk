@@ -1,7 +1,5 @@
 /*
- * PlaylistParserObserverInterface.h
- *
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -15,38 +13,20 @@
  * permissions and limitations under the License.
  */
 
-#ifndef ALEXA_CLIENT_SDK_AVS_COMMON_UTILS_INCLUDE_AVS_COMMON_UTILS_PLAYLIST_PARSER_PLAYLIST_PARSER_OBSERVER_INTERFACE_H_
-#define ALEXA_CLIENT_SDK_AVS_COMMON_UTILS_INCLUDE_AVS_COMMON_UTILS_PLAYLIST_PARSER_PLAYLIST_PARSER_OBSERVER_INTERFACE_H_
+#ifndef ALEXA_CLIENT_SDK_AVSCOMMON_UTILS_INCLUDE_AVSCOMMON_UTILS_PLAYLISTPARSER_PLAYLISTPARSEROBSERVERINTERFACE_H_
+#define ALEXA_CLIENT_SDK_AVSCOMMON_UTILS_INCLUDE_AVSCOMMON_UTILS_PLAYLISTPARSER_PLAYLISTPARSEROBSERVERINTERFACE_H_
 
+#include <chrono>
 #include <ostream>
 #include <queue>
 #include <string>
+
+#include "PlaylistEntry.h"
 
 namespace alexaClientSDK {
 namespace avsCommon {
 namespace utils {
 namespace playlistParser {
-
-/**
- * An enum class used to specify the result of a parsing operation.
- */
-enum class PlaylistParseResult {
-
-    /// The playlist was parsed successfully.
-    PARSE_RESULT_SUCCESS,
-
-    /// The playlist could not be handled.
-    PARSE_RESULT_UNHANDLED,
-
-    /// There was an error parsing the playlist.
-    PARSE_RESULT_ERROR,
-
-    /// The playlist was ignored due to its scheme or MIME type.
-    PARSE_RESULT_IGNORED,
-
-    ///Parsing of the playlist was cancelled part-way through.
-    PARSE_RESULT_CANCELLED
-};
 
 /**
  * An observer of the playlist parser.
@@ -59,16 +39,15 @@ public:
     virtual ~PlaylistParserObserverInterface() = default;
 
     /**
-     * Notification that the playlist parsing has been completed.
+     * Notification that an entry has been parsed.
      *
-     * @param playlistUrl The playlist that was parsed.
-     * @param urls A list of the urls extracted from the playlist.
-     * @param parseResult The result of parsing the playlist.
+     * @param requestId The id of the callback to connect this callback to an original request.
+     * @param playlistEntry The parsing result. The @c url field will be valid if @c parseResult is different than
+     * ERROR.
+     *
+     * @note This function is always called from a single thread in PlayListParser.
      */
-    virtual void onPlaylistParsed(
-            std::string playlistUrl,
-            std::queue<std::string> urls,
-            PlaylistParseResult parseResult) = 0;
+    virtual void onPlaylistEntryParsed(int requestId, PlaylistEntry playlistEntry) = 0;
 };
 
 /**
@@ -80,28 +59,22 @@ public:
  */
 inline std::ostream& operator<<(std::ostream& stream, const PlaylistParseResult& result) {
     switch (result) {
-        case PlaylistParseResult::PARSE_RESULT_SUCCESS:
-            stream << "PARSE_RESULT_SUCCESS";
+        case PlaylistParseResult::FINISHED:
+            stream << "FINISHED";
             break;
-        case PlaylistParseResult::PARSE_RESULT_UNHANDLED:
-            stream << "PARSE_RESULT_UNHANDLED";
+        case PlaylistParseResult::ERROR:
+            stream << "ERROR";
             break;
-        case PlaylistParseResult::PARSE_RESULT_ERROR:
-            stream << "PARSE_RESULT_ERROR";
-            break;
-        case PlaylistParseResult::PARSE_RESULT_IGNORED:
-            stream << "PARSE_RESULT_IGNORED";
-            break;
-        case PlaylistParseResult::PARSE_RESULT_CANCELLED:
-            stream << "PARSE_RESULT_CANCELLED";
+        case PlaylistParseResult::STILL_ONGOING:
+            stream << "STILL_ONGOING";
             break;
     }
     return stream;
 }
 
-} // namespace playlistParser
-} // namespace utils
-} // namespace avsCommon
-} // namespace alexaClientSDK
+}  // namespace playlistParser
+}  // namespace utils
+}  // namespace avsCommon
+}  // namespace alexaClientSDK
 
-#endif // ALEXA_CLIENT_SDK_AVS_COMMON_UTILS_INCLUDE_AVS_COMMON_UTILS_PLAYLIST_PARSER_PLAYLIST_PARSER_OBSERVER_INTERFACE_H_
+#endif  // ALEXA_CLIENT_SDK_AVSCOMMON_UTILS_INCLUDE_AVSCOMMON_UTILS_PLAYLISTPARSER_PLAYLISTPARSEROBSERVERINTERFACE_H_

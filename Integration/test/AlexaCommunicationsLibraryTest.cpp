@@ -1,7 +1,5 @@
 /*
- * AlexaCommunicationsLibraryTest.cpp
- *
- * Copyright 2016-2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2016-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -24,15 +22,12 @@
 #include <gtest/gtest.h>
 
 #include <ACL/AVSConnectionManager.h>
-#include <ACL/Transport/HTTP2MessageRouter.h>
-#include <AuthDelegate/AuthDelegate.h>
 #include <AVSCommon/AVS/Attachment/AttachmentManager.h>
 #include <AVSCommon/AVS/Attachment/InProcessAttachment.h>
-#include <AVSCommon/Utils/SDS/InProcessSDS.h>
-#include <AVSCommon/AVS/Initialization/AlexaClientSDKInit.h>
-#include <AVSCommon/Utils/Logger/Logger.h>
+#include <CBLAuthDelegate/SQLiteCBLAuthDelegateStorage.h>
+#include <ContextManager/ContextManager.h>
 
-#include "Integration/AuthObserver.h"
+#include "Integration/ACLTestContext.h"
 #include "Integration/ClientMessageHandler.h"
 #include "Integration/ConnectionStatusObserver.h"
 #include "Integration/ObservableMessageRequest.h"
@@ -42,13 +37,14 @@ namespace integration {
 namespace test {
 
 using namespace acl;
-using namespace authDelegate;
 using namespace avsCommon::avs;
 using namespace avsCommon::avs::attachment;
+using namespace avsCommon::sdkInterfaces;
 using namespace avsCommon::utils::sds;
-using namespace avsCommon::avs::initialization;
+using namespace registrationManager;
 
 /// This is a basic synchronize JSON message which may be used to initiate a connection with AVS.
+// clang-format off
 static const std::string SYNCHRONIZE_STATE_JSON =
     "{"
         "\"context\":[{"
@@ -72,6 +68,7 @@ static const std::string SYNCHRONIZE_STATE_JSON =
             "}"
         "}"
     "}";
+// clang-format on
 
 /// This is a partial JSON string that should not be parseable.
 static const std::string BAD_SYNCHRONIZE_STATE_JSON = "{";
@@ -82,6 +79,7 @@ static const std::string BAD_SYNCHRONIZE_STATE_JSON = "{";
  * CLOSE_TALK performs end-of-speech detection on the client, so a stop-capture directive will not be received from AVS.
  * NEAR_FIELD performs end-of-speech detection in AVS, so a stop-capture directive will be received from AVS.
  */
+// clang-format off
 #define RECOGNIZE_EVENT_JSON(PROFILE)                             \
     "{"                                                           \
         "\"event\":{"                                             \
@@ -139,6 +137,7 @@ static const std::string BAD_SYNCHRONIZE_STATE_JSON = "{";
             "}"                                                   \
         "}]"                                                      \
     "}"
+// clang-format on
 
 /// This string specifies a Recognize event using the CLOSE_TALK profile.
 static const std::string CT_RECOGNIZE_EVENT_JSON = RECOGNIZE_EVENT_JSON(CLOSE_TALK);
@@ -146,6 +145,7 @@ static const std::string CT_RECOGNIZE_EVENT_JSON = RECOGNIZE_EVENT_JSON(CLOSE_TA
 static const std::string NF_RECOGNIZE_EVENT_JSON = RECOGNIZE_EVENT_JSON(NEAR_FIELD);
 
 /// This string specifies an ExpectSpeechTimedOut event.
+// clang-format off
 static const std::string EXPECT_SPEECH_TIMED_OUT_EVENT_JSON =
     "{"
         "\"event\": {"
@@ -158,6 +158,7 @@ static const std::string EXPECT_SPEECH_TIMED_OUT_EVENT_JSON =
             "}"
         "}"
     "}";
+// clang-format on
 
 /// This is a 16 bit 16 kHz little endian linear PCM audio file containing a recognized message for AVS
 static const std::string RECOGNIZE_AUDIO_FILE_NAME = "recognize_test.wav";
@@ -172,66 +173,54 @@ static const std::string SILENCE_AUDIO_FILE_NAME = "silence_test.wav";
  */
 static const int MAX_CONCURRENT_STREAMS = 9;
 
-std::string g_configPath;
-std::string g_inputPath;
+/// Path to the AlexaClientSDKConfig.json file (from command line arguments).
+static std::string g_configPath;
+/// Path to resources (e.g. audio files) for tests (from command line arguments).
+static std::string g_inputPath;
 
 class AlexaCommunicationsLibraryTest : public ::testing::Test {
 public:
     void SetUp() override {
-        std::ifstream infile(g_configPath);
-        ASSERT_TRUE(infile.good());
-        ASSERT_TRUE(AlexaClientSDKInit::initialize({&infile}));
+        m_context = ACLTestContext::create(g_configPath);
+        ASSERT_TRUE(m_context);
 
-        m_authObserver = std::make_shared<AuthObserver>();
-        ASSERT_TRUE(m_authDelegate = AuthDelegate::create());
-        m_authDelegate->addAuthObserver(m_authObserver);
-
-        m_attachmentManager = std::make_shared<AttachmentManager>(AttachmentManager::AttachmentType::IN_PROCESS);
-
-        m_connectionStatusObserver = std::make_shared<ConnectionStatusObserver>();
-        m_clientMessageHandler = std::make_shared<ClientMessageHandler>(m_attachmentManager);
-        m_messageRouter = std::make_shared<HTTP2MessageRouter>(m_authDelegate, m_attachmentManager);
-
-        bool isEnabled = false;
+        m_clientMessageHandler = std::make_shared<ClientMessageHandler>(m_context->getAttachmentManager());
         m_avsConnectionManager = AVSConnectionManager::create(
-                m_messageRouter,
-                isEnabled,
-                { m_connectionStatusObserver },
-                { m_clientMessageHandler });
+            m_context->getMessageRouter(), false, {m_context->getConnectionStatusObserver()}, {m_clientMessageHandler});
+        ASSERT_TRUE(m_avsConnectionManager);
+
         connect();
     }
 
     void TearDown() override {
-        disconnect();
-        AlexaClientSDKInit::uninitialize();
+        // Note nullptr checks needed to avoid segaults if @c SetUp() failed.
+        if (m_avsConnectionManager) {
+            disconnect();
+            m_avsConnectionManager->shutdown();
+        }
+        m_context.reset();
     }
 
     void connect() {
-        ASSERT_TRUE(m_authObserver->waitFor(AuthObserver::State::REFRESHED)) << "Retrieving the auth token timed out.";
         m_avsConnectionManager->enable();
-        ASSERT_TRUE(m_connectionStatusObserver->waitFor(
-                ConnectionStatusObserverInterface::Status::CONNECTED)) << "Connecting timed out.";
-        // TODO: ACSDK-421: Remove the callback when m_avsConnection manager is no longer an observer to
-        // StateSynchronizer.
-        m_avsConnectionManager->onStateChanged(StateSynchronizerObserverInterface::State::SYNCHRONIZED);
-        ASSERT_TRUE(m_connectionStatusObserver->waitFor(
-                ConnectionStatusObserverInterface::Status::POST_CONNECTED)) << "Post connecting timed out.";
+        m_context->waitForConnected();
     }
 
     void disconnect() {
-        m_avsConnectionManager->disable();
-        ASSERT_TRUE(m_connectionStatusObserver->waitFor(
-                ConnectionStatusObserverInterface::Status::DISCONNECTED)) << "Disconnecting timed out.";
+        if (m_avsConnectionManager) {
+            m_avsConnectionManager->disable();
+            m_context->waitForDisconnected();
+        }
     }
 
     /*
      * Function to send an Event to AVS.
      */
     void sendEvent(
-            const std::string & jsonContent,
-            MessageRequest::Status expectedStatus,
-            std::chrono::seconds timeout,
-            std::shared_ptr<avsCommon::avs::attachment::AttachmentReader> attachmentReader = nullptr) {
+        const std::string& jsonContent,
+        avsCommon::sdkInterfaces::MessageRequestObserverInterface::Status expectedStatus,
+        std::chrono::seconds timeout,
+        std::shared_ptr<avsCommon::avs::attachment::AttachmentReader> attachmentReader = nullptr) {
         auto messageRequest = std::make_shared<ObservableMessageRequest>(jsonContent, attachmentReader);
 
         m_avsConnectionManager->sendMessage(messageRequest);
@@ -242,7 +231,7 @@ public:
     /**
      * Function to create an attachmentReader given a filename.
      */
-    std::shared_ptr<InProcessAttachmentReader> createAttachmentReader(const std::string & fileName) {
+    std::shared_ptr<InProcessAttachmentReader> createAttachmentReader(const std::string& fileName) {
         // 1MB is large enough for our test audio samples.
         const int mbBytes = 1024 * 1024;
 
@@ -268,8 +257,9 @@ public:
             attachmentWriter->write(localBuffer.data(), numBytesRead, &writeStatus);
 
             // confirm the SDS write operation went ok
-            bool writeStatusOk = (AttachmentWriter::WriteStatus::OK == writeStatus ||
-                                  AttachmentWriter::WriteStatus::CLOSED == writeStatus);
+            bool writeStatusOk =
+                (AttachmentWriter::WriteStatus::OK == writeStatus ||
+                 AttachmentWriter::WriteStatus::CLOSED == writeStatus);
             EXPECT_TRUE(writeStatusOk);
         }
 
@@ -278,7 +268,7 @@ public:
 
         // create and return the reader.
         std::shared_ptr<InProcessAttachmentReader> attachmentReader =
-                InProcessAttachmentReader::create(AttachmentReader::Policy::NON_BLOCKING, sds);
+            InProcessAttachmentReader::create(ReaderPolicy::NONBLOCKING, sds);
         EXPECT_NE(attachmentReader, nullptr);
 
         return attachmentReader;
@@ -290,26 +280,26 @@ public:
     void sendRandomEvent() {
         std::shared_ptr<InProcessAttachmentReader> attachmentReader;
         std::string eventJson = SYNCHRONIZE_STATE_JSON;
+        auto status = avsCommon::sdkInterfaces::MessageRequestObserverInterface::Status::SUCCESS_NO_CONTENT;
 
         if (rand() % 2) {
             eventJson = CT_RECOGNIZE_EVENT_JSON;
             attachmentReader = createAttachmentReader(g_inputPath + "/" + RECOGNIZE_AUDIO_FILE_NAME);
+            status = avsCommon::sdkInterfaces::MessageRequestObserverInterface::Status::SUCCESS;
         }
 
-        sendEvent(eventJson, MessageRequest::Status::SUCCESS, std::chrono::seconds(40), attachmentReader);
+        sendEvent(eventJson, status, std::chrono::seconds(40), attachmentReader);
     }
 
-    std::shared_ptr<AuthObserver> m_authObserver;
-    std::shared_ptr<AuthDelegate> m_authDelegate;
-    std::shared_ptr<ConnectionStatusObserver> m_connectionStatusObserver;
+    /// Context for running ACL based tests.
+    std::unique_ptr<ACLTestContext> m_context;
+
     std::shared_ptr<ClientMessageHandler> m_clientMessageHandler;
-    std::shared_ptr<AttachmentManager> m_attachmentManager;
-    std::shared_ptr<MessageRouter> m_messageRouter;
     std::shared_ptr<AVSConnectionManager> m_avsConnectionManager;
 };
 
 /// Test connecting and disconnecting from AVS.
-TEST_F(AlexaCommunicationsLibraryTest, testConnectAndDisconnect) {
+TEST_F(AlexaCommunicationsLibraryTest, test_connectAndDisconnect) {
     // Connect is called in SetUp and disconnect is called in TearDown. Simply check that we are connected.
     ASSERT_TRUE(m_avsConnectionManager->isConnected());
 }
@@ -321,16 +311,22 @@ TEST_F(AlexaCommunicationsLibraryTest, testConnectAndDisconnect) {
  *
  * @see https://developer.amazon.com/public/solutions/alexa/alexa-voice-service/reference/system#synchronizestate
  */
-TEST_F(AlexaCommunicationsLibraryTest, testSendEvent) {
-    sendEvent(SYNCHRONIZE_STATE_JSON, MessageRequest::Status::SUCCESS, std::chrono::seconds(10));
+TEST_F(AlexaCommunicationsLibraryTest, test_sendEvent) {
+    sendEvent(
+        SYNCHRONIZE_STATE_JSON,
+        avsCommon::sdkInterfaces::MessageRequestObserverInterface::Status::SUCCESS_NO_CONTENT,
+        std::chrono::seconds(10));
 }
 
 /**
  * Function that tests the behavior of the ACL when an improperly formatted message is sent, expecting the server
- * to return an internal error.
+ * to return a bad request status.
  */
-TEST_F(AlexaCommunicationsLibraryTest, testSendInvalidEvent) {
-    sendEvent(BAD_SYNCHRONIZE_STATE_JSON, MessageRequest::Status::SERVER_INTERNAL_ERROR, std::chrono::seconds(10));
+TEST_F(AlexaCommunicationsLibraryTest, test_sendInvalidEvent) {
+    sendEvent(
+        BAD_SYNCHRONIZE_STATE_JSON,
+        avsCommon::sdkInterfaces::MessageRequestObserverInterface::Status::BAD_REQUEST,
+        std::chrono::seconds(10));
 }
 
 /**
@@ -341,10 +337,13 @@ TEST_F(AlexaCommunicationsLibraryTest, testSendInvalidEvent) {
  *
  * @see https://developer.amazon.com/public/solutions/alexa/alexa-voice-service/reference/speechrecognizer#recognize
  */
-TEST_F(AlexaCommunicationsLibraryTest, testSendEventWithAttachment) {
+TEST_F(AlexaCommunicationsLibraryTest, test_sendEventWithAttachment) {
     auto attachmentReader = createAttachmentReader(g_inputPath + "/" + RECOGNIZE_AUDIO_FILE_NAME);
-    sendEvent(CT_RECOGNIZE_EVENT_JSON, MessageRequest::Status::SUCCESS, std::chrono::seconds(10),
-            attachmentReader);
+    sendEvent(
+        CT_RECOGNIZE_EVENT_JSON,
+        avsCommon::sdkInterfaces::MessageRequestObserverInterface::Status::SUCCESS,
+        std::chrono::seconds(10),
+        attachmentReader);
 }
 
 /**
@@ -355,10 +354,13 @@ TEST_F(AlexaCommunicationsLibraryTest, testSendEventWithAttachment) {
  *
  * @see https://developer.amazon.com/public/solutions/alexa/alexa-voice-service/reference/audioplayer#states
  */
-TEST_F(AlexaCommunicationsLibraryTest, testSendEventAndReceiveDirective) {
+TEST_F(AlexaCommunicationsLibraryTest, test_sendEventAndReceiveDirective) {
     auto attachmentReader = createAttachmentReader(g_inputPath + "/" + RECOGNIZE_AUDIO_FILE_NAME);
-    sendEvent(CT_RECOGNIZE_EVENT_JSON, MessageRequest::Status::SUCCESS, std::chrono::seconds(10),
-            attachmentReader);
+    sendEvent(
+        CT_RECOGNIZE_EVENT_JSON,
+        avsCommon::sdkInterfaces::MessageRequestObserverInterface::Status::SUCCESS,
+        std::chrono::seconds(10),
+        attachmentReader);
 
     // We expect to receive Directives in response to the recognize Event.  Wait for the first one.
     ASSERT_TRUE(m_clientMessageHandler->waitForNext(std::chrono::seconds(20)));
@@ -367,18 +369,22 @@ TEST_F(AlexaCommunicationsLibraryTest, testSendEventAndReceiveDirective) {
 /**
  * Test sending multiple Events in succession and verify that AVS responds to each of them.
  */
-TEST_F(AlexaCommunicationsLibraryTest, testSendEventsSerially) {
+TEST_F(AlexaCommunicationsLibraryTest, test_sendEventsSerially) {
     const int NUMBER_OF_SUCCESSIVE_SENDS = 10;
     for (int i = 0; i < NUMBER_OF_SUCCESSIVE_SENDS; ++i) {
         auto attachmentReader = createAttachmentReader(g_inputPath + "/" + RECOGNIZE_AUDIO_FILE_NAME);
-        sendEvent(CT_RECOGNIZE_EVENT_JSON, MessageRequest::Status::SUCCESS, std::chrono::seconds(10), attachmentReader);
+        sendEvent(
+            CT_RECOGNIZE_EVENT_JSON,
+            avsCommon::sdkInterfaces::MessageRequestObserverInterface::Status::SUCCESS,
+            std::chrono::seconds(10),
+            attachmentReader);
     }
 }
 
 /**
  * Test sending multiple Events concurrently and verify that AVS responds to each of them.
  */
-TEST_F(AlexaCommunicationsLibraryTest, testSendEventsConcurrently) {
+TEST_F(AlexaCommunicationsLibraryTest, test_sendEventsConcurrently) {
     std::vector<std::future<void>> futures;
 
     for (int i = 0; i < MAX_CONCURRENT_STREAMS; ++i) {
@@ -386,7 +392,7 @@ TEST_F(AlexaCommunicationsLibraryTest, testSendEventsConcurrently) {
         futures.push_back(std::move(future));
     }
 
-    for (auto & future : futures) {
+    for (auto& future : futures) {
         auto status = future.wait_for(std::chrono::seconds(20));
         ASSERT_EQ(status, std::future_status::ready);
     }
@@ -401,9 +407,13 @@ TEST_F(AlexaCommunicationsLibraryTest, testSendEventsConcurrently) {
  *
  * @see https://developer.amazon.com/public/solutions/alexa/alexa-voice-service/reference/speechrecognizer#profiles
  */
-TEST_F(AlexaCommunicationsLibraryTest, testReceiveDirectiveOnDownchannel) {
+TEST_F(AlexaCommunicationsLibraryTest, test_receiveDirectiveOnDownchannel) {
     auto attachmentReader = createAttachmentReader(g_inputPath + "/" + SILENCE_AUDIO_FILE_NAME);
-    sendEvent(NF_RECOGNIZE_EVENT_JSON, MessageRequest::Status::SUCCESS, std::chrono::seconds(10), attachmentReader);
+    sendEvent(
+        NF_RECOGNIZE_EVENT_JSON,
+        avsCommon::sdkInterfaces::MessageRequestObserverInterface::Status::SUCCESS_NO_CONTENT,
+        std::chrono::seconds(10),
+        attachmentReader);
 
     // Wait for the StopCapture Directive to be received.
     ASSERT_TRUE(m_clientMessageHandler->waitForNext(std::chrono::seconds(20)));
@@ -412,21 +422,27 @@ TEST_F(AlexaCommunicationsLibraryTest, testReceiveDirectiveOnDownchannel) {
 /**
  * Test that a connection to AVS persists between sending Events.
  */
-TEST_F(AlexaCommunicationsLibraryTest, testPersistentConnection) {
+TEST_F(AlexaCommunicationsLibraryTest, test_persistentConnection) {
     auto attachmentReader = createAttachmentReader(g_inputPath + "/" + RECOGNIZE_AUDIO_FILE_NAME);
-    sendEvent(CT_RECOGNIZE_EVENT_JSON, MessageRequest::Status::SUCCESS, std::chrono::seconds(10),
-            attachmentReader);
-    ASSERT_FALSE(m_connectionStatusObserver->waitFor(
-            ConnectionStatusObserverInterface::Status::DISCONNECTED, std::chrono::seconds(20)))
-                                << "Connection changed after a response was received";
-    sendEvent(CT_RECOGNIZE_EVENT_JSON, MessageRequest::Status::SUCCESS, std::chrono::seconds(10),
-            attachmentReader);
+    sendEvent(
+        CT_RECOGNIZE_EVENT_JSON,
+        avsCommon::sdkInterfaces::MessageRequestObserverInterface::Status::SUCCESS,
+        std::chrono::seconds(10),
+        attachmentReader);
+    ASSERT_FALSE(m_context->getConnectionStatusObserver()->waitFor(
+        ConnectionStatusObserverInterface::Status::DISCONNECTED, std::chrono::seconds(20)))
+        << "Connection changed after a response was received";
+    sendEvent(
+        CT_RECOGNIZE_EVENT_JSON,
+        avsCommon::sdkInterfaces::MessageRequestObserverInterface::Status::SUCCESS_NO_CONTENT,
+        std::chrono::seconds(10),
+        attachmentReader);
 }
 
 /**
  * Test add- and removeConnectionStatuObserver, expecting the observer to be updated only when it is added.
  */
-TEST_F(AlexaCommunicationsLibraryTest, testMultipleConnectionStatusObservers) {
+TEST_F(AlexaCommunicationsLibraryTest, test_multipleConnectionStatusObservers) {
     auto observer = std::make_shared<ConnectionStatusObserver>();
     m_avsConnectionManager->addConnectionStatusObserver(observer);
 
@@ -436,18 +452,18 @@ TEST_F(AlexaCommunicationsLibraryTest, testMultipleConnectionStatusObservers) {
     m_avsConnectionManager->removeConnectionStatusObserver(observer);
     disconnect();
     ASSERT_EQ(observer->getConnectionStatus(), ConnectionStatusObserverInterface::Status::CONNECTED);
-    ASSERT_TRUE(m_connectionStatusObserver->waitFor(ConnectionStatusObserverInterface::Status::DISCONNECTED));
+    ASSERT_TRUE(
+        m_context->getConnectionStatusObserver()->waitFor(ConnectionStatusObserverInterface::Status::DISCONNECTED));
 }
+}  // namespace test
+}  // namespace integration
+}  // namespace alexaClientSDK
 
-} // namespace test
-} // namespace integration
-} // namespace alexaClientSDK
-
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     if (argc < 3) {
-        std::cerr << "USAGE: AlexaCommunicationsLibraryTest <path_to_auth_delgate_config> <path_to_inputs_folder>"
-                << std::endl;
+        std::cerr << "USAGE: " << std::string(argv[0]) << " <path_to_auth_delgate_config> <path_to_inputs_folder>"
+                  << std::endl;
         return 1;
     } else {
         alexaClientSDK::integration::test::g_configPath = std::string(argv[1]);

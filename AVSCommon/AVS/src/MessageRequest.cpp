@@ -1,7 +1,5 @@
 /*
- * MessageRequest.cpp
- *
- * Copyright 2016-2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -16,67 +14,110 @@
  */
 
 #include "AVSCommon/AVS/MessageRequest.h"
+#include "AVSCommon/Utils/Logger/Logger.h"
 
 namespace alexaClientSDK {
 namespace avsCommon {
 namespace avs {
 
-MessageRequest::MessageRequest(const std::string & jsonContent,
-        std::shared_ptr<avsCommon::avs::attachment::AttachmentReader> attachmentReader) :
-        m_jsonContent{jsonContent}, m_attachmentReader{attachmentReader} {
+using namespace sdkInterfaces;
+
+/// String to identify log entries originating from this file.
+static const std::string TAG("MessageRequest");
+
+/**
+ * Create a LogEntry using this file's TAG and the specified event string.
+ *
+ * @param The event string for this @c LogEntry.
+ */
+#define LX(event) alexaClientSDK::avsCommon::utils::logger::LogEntry(TAG, event)
+
+MessageRequest::MessageRequest(const std::string& jsonContent, const std::string& uriPathExtension) :
+        m_jsonContent{jsonContent},
+        m_uriPathExtension{uriPathExtension} {
 }
 
 MessageRequest::~MessageRequest() {
+}
 
+void MessageRequest::addAttachmentReader(
+    const std::string& name,
+    std::shared_ptr<attachment::AttachmentReader> attachmentReader) {
+    if (!attachmentReader) {
+        ACSDK_ERROR(LX("addAttachmentReaderFailed").d("reason", "nullAttachment"));
+        return;
+    }
+
+    auto namedReader = std::make_shared<MessageRequest::NamedReader>(name, attachmentReader);
+    m_readers.push_back(namedReader);
 }
 
 std::string MessageRequest::getJsonContent() {
     return m_jsonContent;
 }
 
-std::shared_ptr<avsCommon::avs::attachment::AttachmentReader> MessageRequest::getAttachmentReader() {
-    return m_attachmentReader;
+std::string MessageRequest::getUriPathExtension() {
+    return m_uriPathExtension;
 }
 
-void MessageRequest::onSendCompleted(Status status) {
-    // default no-op
+int MessageRequest::attachmentReadersCount() {
+    return m_readers.size();
 }
 
-void MessageRequest::onExceptionReceived(const std::string & exceptionMessage) {
-    // default no-op
-}
-
-std::string MessageRequest::statusToString(Status status) {
-    switch (status) {
-        case Status::PENDING:
-            return "PENDING";
-        case Status::SUCCESS:
-            return "SUCCESS";
-        case Status::NOT_CONNECTED:
-            return "NOT_CONNECTED";
-        case Status::NOT_SYNCHRONIZED:
-            return "NOT_SYNCHRONIZED";
-        case Status::TIMEDOUT:
-            return "TIMEDOUT";
-        case Status::PROTOCOL_ERROR:
-            return "PROTOCOL_ERROR";
-        case Status::INTERNAL_ERROR:
-            return "INTERNAL_ERROR";
-        case Status::SERVER_INTERNAL_ERROR:
-            return "SERVER_INTERNAL_ERROR";
-        case Status::REFUSED:
-            return "REFUSED";
-        case Status::CANCELED:
-            return "CANCELED";
-        case Status::THROTTLED:
-            return "THROTTLED";
-        case Status::INVALID_AUTH:
-            return "INVALID_AUTH";
+std::shared_ptr<MessageRequest::NamedReader> MessageRequest::getAttachmentReader(size_t index) {
+    if (m_readers.size() <= index) {
+        ACSDK_ERROR(LX("getAttachmentReaderFailed").d("reason", "index out of bound").d("index", index));
+        return nullptr;
     }
 
-    return "sendMessageStatusToString_UNHANDLED_ERROR";
+    return m_readers[index];
 }
 
-} // namespace avs
-} // namespace avsCommon
-} // namespace alexaClientSDK
+void MessageRequest::sendCompleted(avsCommon::sdkInterfaces::MessageRequestObserverInterface::Status status) {
+    std::unique_lock<std::mutex> lock{m_observerMutex};
+    auto observers = m_observers;
+    lock.unlock();
+
+    for (auto observer : observers) {
+        observer->onSendCompleted(status);
+    }
+}
+
+void MessageRequest::exceptionReceived(const std::string& exceptionMessage) {
+    ACSDK_ERROR(LX("onExceptionReceived").d("exception", exceptionMessage));
+
+    std::unique_lock<std::mutex> lock{m_observerMutex};
+    auto observers = m_observers;
+    lock.unlock();
+
+    for (auto observer : observers) {
+        observer->onExceptionReceived(exceptionMessage);
+    }
+}
+
+void MessageRequest::addObserver(std::shared_ptr<avsCommon::sdkInterfaces::MessageRequestObserverInterface> observer) {
+    if (!observer) {
+        ACSDK_ERROR(LX("addObserverFailed").d("reason", "nullObserver"));
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock{m_observerMutex};
+    m_observers.insert(observer);
+}
+
+void MessageRequest::removeObserver(
+    std::shared_ptr<avsCommon::sdkInterfaces::MessageRequestObserverInterface> observer) {
+    if (!observer) {
+        ACSDK_ERROR(LX("removeObserverFailed").d("reason", "nullObserver"));
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock{m_observerMutex};
+    m_observers.erase(observer);
+}
+
+using namespace avsCommon::sdkInterfaces;
+
+}  // namespace avs
+}  // namespace avsCommon
+}  // namespace alexaClientSDK

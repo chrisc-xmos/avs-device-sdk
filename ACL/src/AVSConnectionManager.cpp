@@ -1,7 +1,5 @@
 /*
- * AVSConnectionManager.cpp
- *
- * Copyright 2016-2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -37,11 +35,12 @@ static const std::string TAG("AVSConnectionManager");
  */
 #define LX(event) alexaClientSDK::avsCommon::utils::logger::LogEntry(TAG, event)
 
-std::shared_ptr<AVSConnectionManager>
-AVSConnectionManager::create(std::shared_ptr<MessageRouterInterface> messageRouter,
-        bool isEnabled,
-        std::unordered_set<std::shared_ptr<ConnectionStatusObserverInterface>> connectionStatusObservers,
-        std::unordered_set<std::shared_ptr<avsCommon::sdkInterfaces::MessageObserverInterface>> messageObservers) {
+std::shared_ptr<AVSConnectionManager> AVSConnectionManager::create(
+    std::shared_ptr<MessageRouterInterface> messageRouter,
+    bool isEnabled,
+    std::unordered_set<std::shared_ptr<ConnectionStatusObserverInterface>> connectionStatusObservers,
+    std::unordered_set<std::shared_ptr<avsCommon::sdkInterfaces::MessageObserverInterface>> messageObservers,
+    std::shared_ptr<avsCommon::sdkInterfaces::InternetConnectionMonitorInterface> internetConnectionMonitor) {
     if (!avsCommon::avs::initialization::AlexaClientSDKInit::isInitialized()) {
         ACSDK_ERROR(LX("createFailed").d("reason", "uninitialziedAlexaClientSdk").d("return", "nullptr"));
         return nullptr;
@@ -59,15 +58,15 @@ AVSConnectionManager::create(std::shared_ptr<MessageRouterInterface> messageRout
         }
     }
 
-    for(auto observer : messageObservers) {
+    for (auto observer : messageObservers) {
         if (!observer) {
             ACSDK_ERROR(LX("createFailed").d("reason", "nullMessageObserver").d("return", "nullptr"));
             return nullptr;
         }
     }
 
-    auto connectionManager = std::shared_ptr<AVSConnectionManager>(
-            new AVSConnectionManager(messageRouter, connectionStatusObservers, messageObservers));
+    auto connectionManager = std::shared_ptr<AVSConnectionManager>(new AVSConnectionManager(
+        messageRouter, connectionStatusObservers, messageObservers, internetConnectionMonitor));
 
     messageRouter->setObserver(connectionManager);
 
@@ -75,49 +74,63 @@ AVSConnectionManager::create(std::shared_ptr<MessageRouterInterface> messageRout
         connectionManager->enable();
     }
 
+    if (internetConnectionMonitor) {
+        ACSDK_DEBUG5(LX(__func__).m("Subscribing to InternetConnectionMonitor Callbacks"));
+        internetConnectionMonitor->addInternetConnectionObserver(connectionManager);
+    }
+
     return connectionManager;
 }
 
 AVSConnectionManager::AVSConnectionManager(
-        std::shared_ptr<MessageRouterInterface> messageRouter,
-        std::unordered_set<std::shared_ptr<ConnectionStatusObserverInterface>> connectionStatusObservers,
-        std::unordered_set<std::shared_ptr<MessageObserverInterface>> messageObservers)
-        : RequiresShutdown{"AVSConnectionManager"},
-          m_isEnabled{false},
-          m_isSynchronized{false},
-          m_connectionStatusObservers{connectionStatusObservers},
-          m_messageObservers{messageObservers},
-          m_messageRouter{messageRouter} {
+    std::shared_ptr<MessageRouterInterface> messageRouter,
+    std::unordered_set<std::shared_ptr<ConnectionStatusObserverInterface>> connectionStatusObservers,
+    std::unordered_set<std::shared_ptr<MessageObserverInterface>> messageObservers,
+    std::shared_ptr<avsCommon::sdkInterfaces::InternetConnectionMonitorInterface> internetConnectionMonitor) :
+        AbstractAVSConnectionManager{connectionStatusObservers},
+        RequiresShutdown{"AVSConnectionManager"},
+        m_isEnabled{false},
+        m_messageObservers{messageObservers},
+        m_messageRouter{messageRouter},
+        m_internetConnectionMonitor{internetConnectionMonitor} {
 }
 
 void AVSConnectionManager::doShutdown() {
-    disable();
-    {
-        std::lock_guard<std::mutex> lock{m_connectionStatusObserverMutex};
-        m_connectionStatusObservers.clear();
+    if (m_internetConnectionMonitor) {
+        m_internetConnectionMonitor->removeInternetConnectionObserver(shared_from_this());
     }
+
+    disable();
+    clearObservers();
     {
-        std::lock_guard<std::mutex> lock{m_messageOberverMutex};
+        std::lock_guard<std::mutex> lock{m_messageObserverMutex};
         m_messageObservers.clear();
     }
     m_messageRouter.reset();
 }
 
 void AVSConnectionManager::enable() {
+    std::lock_guard<std::mutex> lock(m_isEnabledMutex);
+    ACSDK_DEBUG5(LX(__func__));
     m_isEnabled = true;
     m_messageRouter->enable();
 }
 
 void AVSConnectionManager::disable() {
+    std::lock_guard<std::mutex> lock(m_isEnabledMutex);
+    ACSDK_DEBUG5(LX(__func__));
     m_isEnabled = false;
     m_messageRouter->disable();
 }
 
 bool AVSConnectionManager::isEnabled() {
+    std::lock_guard<std::mutex> lock(m_isEnabledMutex);
     return m_isEnabled;
 }
 
 void AVSConnectionManager::reconnect() {
+    std::lock_guard<std::mutex> lock(m_isEnabledMutex);
+    ACSDK_DEBUG5(LX(__func__).d("isEnabled", m_isEnabled));
     if (m_isEnabled) {
         m_messageRouter->disable();
         m_messageRouter->enable();
@@ -125,16 +138,7 @@ void AVSConnectionManager::reconnect() {
 }
 
 void AVSConnectionManager::sendMessage(std::shared_ptr<avsCommon::avs::MessageRequest> request) {
-    // TODO: ACSDK-421: Implement synchronized state check at a lower level.
-    std::unique_lock<std::mutex> lock{m_synchronizationMutex};
-    if (m_isSynchronized) {
-        lock.unlock();
-        m_messageRouter->sendMessage(request);
-    } else {
-        lock.unlock();
-        ACSDK_DEBUG(LX("sendMessageNotSuccessful").d("reason", "notSynchronized"));
-        request->onSendCompleted(avsCommon::avs::MessageRequest::Status::NOT_SYNCHRONIZED);
-    }
+    m_messageRouter->sendMessage(request);
 }
 
 bool AVSConnectionManager::isConnected() const {
@@ -145,89 +149,49 @@ void AVSConnectionManager::setAVSEndpoint(const std::string& avsEndpoint) {
     m_messageRouter->setAVSEndpoint(avsEndpoint);
 }
 
-void AVSConnectionManager::addConnectionStatusObserver(
-        std::shared_ptr<avsCommon::sdkInterfaces::ConnectionStatusObserverInterface> observer) {
-    if (!observer) {
-        ACSDK_ERROR(LX("addConnectionStatusObserverFailed").d("reason", "nullObserver"));
-        return;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock{m_connectionStatusObserverMutex};
-        if (!m_connectionStatusObservers.insert(observer).second) {
-            // The observer was already part of the set, no need to notify it of a status change.
-            return;
-        }
-    }
-
-    auto connectionStatus = m_messageRouter->getConnectionStatus();
-    observer->onConnectionStatusChanged(connectionStatus.first, connectionStatus.second);
+std::string AVSConnectionManager::getAVSEndpoint() {
+    return m_messageRouter->getAVSEndpoint();
 }
 
-void AVSConnectionManager::removeConnectionStatusObserver(
-        std::shared_ptr<avsCommon::sdkInterfaces::ConnectionStatusObserverInterface> observer) {
-    if (!observer) {
-        ACSDK_ERROR(LX("removeConnectionStatusObserverFailed").d("reason", "nullObserver"));
-        return;
+void AVSConnectionManager::onConnectionStatusChanged(bool connected) {
+    ACSDK_DEBUG5(LX(__func__).d("connected", connected));
+    if (!connected) {
+        reconnect();
     }
-    std::lock_guard<std::mutex> lock{m_connectionStatusObserverMutex};
-    m_connectionStatusObservers.erase(observer);
 }
 
 void AVSConnectionManager::addMessageObserver(
-        std::shared_ptr<avsCommon::sdkInterfaces::MessageObserverInterface> observer) {
+    std::shared_ptr<avsCommon::sdkInterfaces::MessageObserverInterface> observer) {
     if (!observer) {
         ACSDK_ERROR(LX("addObserverFailed").d("reason", "nullObserver"));
         return;
     }
 
-    std::lock_guard<std::mutex> lock{m_messageOberverMutex};
+    std::lock_guard<std::mutex> lock{m_messageObserverMutex};
     m_messageObservers.insert(observer);
 }
 
 void AVSConnectionManager::removeMessageObserver(
-        std::shared_ptr<avsCommon::sdkInterfaces::MessageObserverInterface> observer) {
+    std::shared_ptr<avsCommon::sdkInterfaces::MessageObserverInterface> observer) {
     if (!observer) {
         ACSDK_ERROR(LX("removeObserverFailed").d("reason", "nullObserver"));
         return;
     }
 
-    std::lock_guard<std::mutex> lock{m_messageOberverMutex};
+    std::lock_guard<std::mutex> lock{m_messageObserverMutex};
     m_messageObservers.erase(observer);
 }
 
 void AVSConnectionManager::onConnectionStatusChanged(
-        const ConnectionStatusObserverInterface::Status status,
-        const ConnectionStatusObserverInterface::ChangedReason reason) {
-    if (status == ConnectionStatusObserverInterface::Status::DISCONNECTED || 
-                status == ConnectionStatusObserverInterface::Status::PENDING ) {
-        std::lock_guard<std::mutex>{m_synchronizationMutex};
-        m_isSynchronized = false;
-    }
-
-    std::unique_lock<std::mutex> lock{m_connectionStatusObserverMutex};
-    std::unordered_set<std::shared_ptr<avsCommon::sdkInterfaces::ConnectionStatusObserverInterface>> observers{m_connectionStatusObservers};
-    lock.unlock();
-
-    for (auto observer : observers) {
-        observer->onConnectionStatusChanged(status, reason);
-    }
+    const ConnectionStatusObserverInterface::Status status,
+    const ConnectionStatusObserverInterface::ChangedReason reason) {
+    updateConnectionStatus(status, reason);
 }
 
-void AVSConnectionManager::onStateChanged(StateSynchronizerObserverInterface::State newState) {
-    std::unique_lock<std::mutex> lock{m_synchronizationMutex};
-    m_isSynchronized = (StateSynchronizerObserverInterface::State::SYNCHRONIZED == newState);
-    if (m_isSynchronized) {
-        lock.unlock();
-        onConnectionStatusChanged(
-                ConnectionStatusObserverInterface::Status::POST_CONNECTED, 
-                ConnectionStatusObserverInterface::ChangedReason::ACL_CLIENT_REQUEST);
-    }
-}
-
-void AVSConnectionManager::receive(const std::string & contextId, const std::string & message) {
-    std::unique_lock<std::mutex> lock{m_messageOberverMutex};
-    std::unordered_set<std::shared_ptr<avsCommon::sdkInterfaces::MessageObserverInterface>> observers{m_messageObservers};
+void AVSConnectionManager::receive(const std::string& contextId, const std::string& message) {
+    std::unique_lock<std::mutex> lock{m_messageObserverMutex};
+    std::unordered_set<std::shared_ptr<avsCommon::sdkInterfaces::MessageObserverInterface>> observers{
+        m_messageObservers};
     lock.unlock();
 
     for (auto observer : observers) {
@@ -237,5 +201,5 @@ void AVSConnectionManager::receive(const std::string & contextId, const std::str
     }
 }
 
-} // namespace acl
-} // namespace alexaClientSDK
+}  // namespace acl
+}  // namespace alexaClientSDK

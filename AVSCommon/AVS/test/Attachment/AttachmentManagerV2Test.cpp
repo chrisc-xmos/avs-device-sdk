@@ -1,7 +1,5 @@
 /*
- * AttachmentManagerV2Test.cpp
- *
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -54,7 +52,8 @@ public:
     /**
      * Constructor.
      */
-    AttachmentManagerTest() : m_manager{AttachmentManager::AttachmentType::IN_PROCESS} { }
+    AttachmentManagerTest() : m_manager{AttachmentManager::AttachmentType::IN_PROCESS} {
+    }
 
     /// Local type aliases.
     using ReaderVec = std::vector<std::unique_ptr<AttachmentReader>>;
@@ -68,7 +67,7 @@ public:
     /**
      * Utility function for testing writer futures.
      */
-    void testWriters(const WriterVec & writers, bool expectedValid);
+    void testWriters(const WriterVec& writers, bool expectedValid);
 
     /**
      * Utility function for creating three reader futures, and inserting them into the vector.
@@ -78,7 +77,7 @@ public:
     /**
      * Utility function for testing reader futures.
      */
-    void testReaders(const ReaderVec & readers, bool expectedValid);
+    void testReaders(const ReaderVec& readers, bool expectedValid);
 
     /// A local @c AttachmentManager object.
     AttachmentManager m_manager;
@@ -90,8 +89,8 @@ void AttachmentManagerTest::createWriters(WriterVec* writers) {
     writers->push_back(m_manager.createWriter(TEST_ATTACHMENT_ID_STRING_THREE));
 }
 
-void AttachmentManagerTest::testWriters(const WriterVec & writers, bool expectedValid) {
-    for (auto & writer : writers) {
+void AttachmentManagerTest::testWriters(const WriterVec& writers, bool expectedValid) {
+    for (auto& writer : writers) {
         if (expectedValid) {
             ASSERT_NE(writer, nullptr);
         } else {
@@ -101,13 +100,13 @@ void AttachmentManagerTest::testWriters(const WriterVec & writers, bool expected
 }
 
 void AttachmentManagerTest::createReaders(ReaderVec* readers) {
-    readers->push_back(m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, AttachmentReader::Policy::BLOCKING));
-    readers->push_back(m_manager.createReader(TEST_ATTACHMENT_ID_STRING_TWO, AttachmentReader::Policy::BLOCKING));
-    readers->push_back(m_manager.createReader(TEST_ATTACHMENT_ID_STRING_THREE, AttachmentReader::Policy::BLOCKING));
+    readers->push_back(m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, utils::sds::ReaderPolicy::BLOCKING));
+    readers->push_back(m_manager.createReader(TEST_ATTACHMENT_ID_STRING_TWO, utils::sds::ReaderPolicy::BLOCKING));
+    readers->push_back(m_manager.createReader(TEST_ATTACHMENT_ID_STRING_THREE, utils::sds::ReaderPolicy::BLOCKING));
 }
 
-void AttachmentManagerTest::testReaders(const ReaderVec & readers, bool expectedValid) {
-    for (auto & reader : readers) {
+void AttachmentManagerTest::testReaders(const ReaderVec& readers, bool expectedValid) {
+    for (auto& reader : readers) {
         if (expectedValid) {
             ASSERT_NE(reader, nullptr);
         } else {
@@ -119,7 +118,7 @@ void AttachmentManagerTest::testReaders(const ReaderVec & readers, bool expected
 /**
  * Test that the AttachmentManager's generate attachment id function works as expected.
  */
-TEST_F(AttachmentManagerTest, testAttachmentManagerGenerateAttachmentId) {
+TEST_F(AttachmentManagerTest, test_attachmentManagerGenerateAttachmentId) {
     // Normal use cases.
     auto id1 = m_manager.generateAttachmentId(TEST_CONTEXT_ID_STRING, TEST_CONTENT_ID_STRING);
     auto id2 = m_manager.generateAttachmentId(TEST_CONTEXT_ID_STRING, TEST_CONTENT_ID_STRING);
@@ -144,7 +143,7 @@ TEST_F(AttachmentManagerTest, testAttachmentManagerGenerateAttachmentId) {
 /**
  * Test that the AttachmentManager's set timeout function works as expected.
  */
-TEST_F(AttachmentManagerTest, testAttachmentManagerSetTimeout) {
+TEST_F(AttachmentManagerTest, test_attachmentManagerSetTimeout) {
     ASSERT_TRUE(m_manager.setAttachmentTimeoutMinutes(TIMEOUT_REGULAR));
     ASSERT_TRUE(m_manager.setAttachmentTimeoutMinutes(AttachmentManager::ATTACHMENT_MANAGER_TIMOUT_MINUTES_MINIMUM));
     ASSERT_FALSE(m_manager.setAttachmentTimeoutMinutes(TIMEOUT_ZERO));
@@ -154,10 +153,10 @@ TEST_F(AttachmentManagerTest, testAttachmentManagerSetTimeout) {
 /**
  * Test that the AttachmentManager's create* functions work in this particular order.
  */
-TEST_F(AttachmentManagerTest, testAttachmentManagerCreateWriterThenReader) {
+TEST_F(AttachmentManagerTest, test_attachmentManagerCreateWriterThenReader) {
     // Create the writer before the reader.
     auto writer = m_manager.createWriter(TEST_ATTACHMENT_ID_STRING_ONE);
-    auto reader = m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, AttachmentReader::Policy::BLOCKING);
+    auto reader = m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, utils::sds::ReaderPolicy::BLOCKING);
     ASSERT_NE(writer, nullptr);
     ASSERT_NE(reader, nullptr);
 }
@@ -165,9 +164,9 @@ TEST_F(AttachmentManagerTest, testAttachmentManagerCreateWriterThenReader) {
 /**
  * Test that the AttachmentManager's create* functions work in this particular order.
  */
-TEST_F(AttachmentManagerTest, testAttachmentManagerCreateReaderThenWriter) {
+TEST_F(AttachmentManagerTest, test_attachmentManagerCreateReaderThenWriter) {
     // Create the reader before the writer.
-    auto reader = m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, AttachmentReader::Policy::BLOCKING);
+    auto reader = m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, utils::sds::ReaderPolicy::BLOCKING);
     auto writer = m_manager.createWriter(TEST_ATTACHMENT_ID_STRING_ONE);
     ASSERT_NE(writer, nullptr);
     ASSERT_NE(reader, nullptr);
@@ -176,21 +175,21 @@ TEST_F(AttachmentManagerTest, testAttachmentManagerCreateReaderThenWriter) {
 /**
  * Test that the AttachmentManager's create reader function works as expected.
  */
-TEST_F(AttachmentManagerTest, testAttachmentManagerCreateReader) {
+TEST_F(AttachmentManagerTest, test_attachmentManagerCreateReader) {
     // Create the reader.
-    auto reader = m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, AttachmentReader::Policy::BLOCKING);
+    auto reader = m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, utils::sds::ReaderPolicy::BLOCKING);
     ASSERT_NE(reader, nullptr);
 }
 
 /**
  * Test that a reader created from an attachment that doesn't have a writer will wait for the writer.
  */
-TEST_F(AttachmentManagerTest, testAttachmentManagerReadAttachmentWithoutWriter) {
+TEST_F(AttachmentManagerTest, test_attachmentManagerReadAttachmentWithoutWriter) {
     auto testPattern = createTestPattern(TEST_SDS_BUFFER_SIZE_IN_BYTES);
     std::vector<uint8_t> result(testPattern.size());
 
     // Create the reader.
-    auto reader = m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, AttachmentReader::Policy::NON_BLOCKING);
+    auto reader = m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, utils::sds::ReaderPolicy::NONBLOCKING);
     ASSERT_NE(reader, nullptr);
 
     // Verify that read indicates an empty (but not closed) buffer.
@@ -220,7 +219,7 @@ TEST_F(AttachmentManagerTest, testAttachmentManagerReadAttachmentWithoutWriter) 
  * Test that the AttachmentManager's cleanup logic works as expected, and that it does not impact readers and
  * writers that are returned before the cleanup.
  */
-TEST_F(AttachmentManagerTest, testAttachmentManagerTestCreateReadersThenWriters) {
+TEST_F(AttachmentManagerTest, test_attachmentManagerTestCreateReadersThenWriters) {
     WriterVec writers;
     ReaderVec readers;
 
@@ -235,7 +234,7 @@ TEST_F(AttachmentManagerTest, testAttachmentManagerTestCreateReadersThenWriters)
  * Test that the AttachmentManager's cleanup logic works as expected, and that it does not impact readers and
  * writers that are returned before the cleanup.
  */
-TEST_F(AttachmentManagerTest, testAttachmentManagerTestCreateWritersThenReaders) {
+TEST_F(AttachmentManagerTest, test_attachmentManagerTestCreateWritersThenReaders) {
     WriterVec writers;
     ReaderVec readers;
 
@@ -249,7 +248,7 @@ TEST_F(AttachmentManagerTest, testAttachmentManagerTestCreateWritersThenReaders)
 /**
  * Verify an AttachmentManager can't create multiple writers.
  */
-TEST_F(AttachmentManagerTest, testAttachmentManagerCreateMultipleWriters) {
+TEST_F(AttachmentManagerTest, test_attachmentManagerCreateMultipleWriters) {
     auto writer1 = m_manager.createWriter(TEST_ATTACHMENT_ID_STRING_ONE);
     auto writer2 = m_manager.createWriter(TEST_ATTACHMENT_ID_STRING_ONE);
     ASSERT_NE(writer1, nullptr);
@@ -259,9 +258,9 @@ TEST_F(AttachmentManagerTest, testAttachmentManagerCreateMultipleWriters) {
 /**
  * Verify an AttachmentManager can't create multiple readers.
  */
-TEST_F(AttachmentManagerTest, testAttachmentManagerCreateMultipleReaders) {
-    auto reader1 = m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, AttachmentReader::Policy::BLOCKING);
-    auto reader2 = m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, AttachmentReader::Policy::BLOCKING);
+TEST_F(AttachmentManagerTest, test_attachmentManagerCreateMultipleReaders) {
+    auto reader1 = m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, utils::sds::ReaderPolicy::BLOCKING);
+    auto reader2 = m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, utils::sds::ReaderPolicy::BLOCKING);
     ASSERT_NE(reader1, nullptr);
     ASSERT_EQ(reader2, nullptr);
 }
@@ -269,9 +268,9 @@ TEST_F(AttachmentManagerTest, testAttachmentManagerCreateMultipleReaders) {
 /**
  * Test a one-pass write and read with both Attachment wrapper classes.
  */
-TEST_F(AttachmentManagerTest, testAttachmentWriterAndReaderInOnePass) {
+TEST_F(AttachmentManagerTest, test_attachmentWriterAndReaderInOnePass) {
     auto writer = m_manager.createWriter(TEST_ATTACHMENT_ID_STRING_ONE);
-    auto reader = m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, AttachmentReader::Policy::BLOCKING);
+    auto reader = m_manager.createReader(TEST_ATTACHMENT_ID_STRING_ONE, utils::sds::ReaderPolicy::BLOCKING);
     ASSERT_NE(writer, nullptr);
     ASSERT_NE(reader, nullptr);
 
@@ -293,7 +292,7 @@ TEST_F(AttachmentManagerTest, testAttachmentWriterAndReaderInOnePass) {
     }
 }
 
-} // namespace test
-} // namespace avs
-} // namespace avsCommon
-} // namespace alexaClientSDK
+}  // namespace test
+}  // namespace avs
+}  // namespace avsCommon
+}  // namespace alexaClientSDK

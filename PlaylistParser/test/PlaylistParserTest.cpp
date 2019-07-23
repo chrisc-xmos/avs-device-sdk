@@ -1,7 +1,5 @@
 /*
- * PlaylistParserTest.cpp
- *
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -15,14 +13,19 @@
  * permissions and limitations under the License.
  */
 
-#include <memory>
 #include <chrono>
-#include <mutex>
 #include <condition_variable>
+#include <memory>
+#include <mutex>
 #include <thread>
+#include <unordered_map>
 
 #include <gmock/gmock.h>
+
 #include <AVSCommon/Utils/Logger/Logger.h>
+#include <AVSCommon/Utils/Memory/Memory.h>
+
+#include "PlaylistParser/MockContentFetcher.h"
 #include "PlaylistParser/PlaylistParser.h"
 
 namespace alexaClientSDK {
@@ -31,221 +34,203 @@ namespace test {
 
 using namespace avsCommon::utils::playlistParser;
 using namespace ::testing;
+using namespace avsCommon::sdkInterfaces;
+using namespace avsCommon::avs;
 
-/// String to identify log entries originating from this file.
-static const std::string TAG("PlaylistParserTest");
-
-/**
- * Create a LogEntry using this file's TAG and the specified event string.
- *
- * @param The event string for this @c LogEntry.
- */
-#define LX(event) alexaClientSDK::avsCommon::utils::logger::LogEntry(TAG, event)
-
-/// The path to the input Dir containing the test audio files.
-std::string inputsDirPath;
-
-/// The prefix for the file URI scheme.
-static const std::string FILE_URI_PREFIX("file://");
-
-/// Test playlist url.
-static const std::string TEST_PLAYLIST{"/sample2.m3u"};
-
-/// A test playlist url. One of the links on this playlist redirects to another playlist.
-static const std::string TEST_ASX_PLAYLIST{"/sample1.asx"};
-
-/// A test playlist in PLS format.
-static const std::string TEST_PLS_PLAYLIST{"/sample3.pls"};
-
-/// A test playlist in HLS format.
-static const std::string TEST_HLS_PLAYLIST{"/sample.m3u8"};
+/// A mock factory that creates mock content fetchers
+class MockContentFetcherFactory : public avsCommon::sdkInterfaces::HTTPContentFetcherInterfaceFactoryInterface {
+    std::unique_ptr<avsCommon::sdkInterfaces::HTTPContentFetcherInterface> create(const std::string& url) {
+        return avsCommon::utils::memory::make_unique<MockContentFetcher>(url);
+    }
+};
 
 /**
  * Mock AttachmentReader.
  */
 class TestParserObserver : public avsCommon::utils::playlistParser::PlaylistParserObserverInterface {
 public:
+    /// A struct used for bookkeeping of parse results
+    struct ParseResult {
+        int requestId;
+        std::string url;
+        avsCommon::utils::playlistParser::PlaylistParseResult parseResult;
+        std::chrono::milliseconds duration;
+    };
+
+    void onPlaylistEntryParsed(int requestId, PlaylistEntry entry) {
+        std::lock_guard<std::mutex> lock{m_mutex};
+        m_parseResults.push_back({requestId, entry.url, entry.parseResult, entry.duration});
+        m_callbackOccurred.notify_one();
+    }
+
     /**
-     * Creates an instance of the @c TestParserObserver.
-     * @return An instance of the @c TestParserObserver.
-     */
-    static std::shared_ptr<TestParserObserver> create();
-
-    /// Destructor
-    ~TestParserObserver() = default;
-
-    void onPlaylistParsed(std::string playlistUrl, std::queue<std::string> urls,
-            avsCommon::utils::playlistParser::PlaylistParseResult parseResult) override;
-
-    /**
-     * Waits for playlist parsing to complete.
+     * Waits for the PlaylistParserObserverInterface##onPlaylistEntryParsed() call N times.
      *
-     * @param expectedResult The expected result from parsing the playlist.
-     * @param duration The duration to wait for playlist parsing to complete.
-     * @return The result of parsing the playlist.
+     * @param numCallbacksExpected The number of callbacks expected.
+     * @param timeout The amount of time to wait for the calls.
+     * @return The parse results that actually occurred.
      */
-    bool waitForPlaylistParsed(const PlaylistParseResult expectedResult,
-            const std::chrono::seconds duration = std::chrono::seconds(5));
+    std::vector<ParseResult> waitForNCallbacks(
+        size_t numCallbacksExpected,
+        std::chrono::milliseconds timeout = SHORT_TIMEOUT) {
+        std::unique_lock<std::mutex> lock{m_mutex};
+        m_callbackOccurred.wait_for(
+            lock, timeout, [this, numCallbacksExpected]() { return m_parseResults.size() == numCallbacksExpected; });
+        return m_parseResults;
+    }
 
-    /**
-     * Constructor.
-     */
-    TestParserObserver();
+private:
+    /// The detection results that have occurred.
+    std::vector<ParseResult> m_parseResults;
 
-    /// Mutex to serialize access to @c m_playlistParsed and @c m_parseResult.
+    /// A mutex to guard against new callbacks.
     std::mutex m_mutex;
 
-    /// Condition Variable to wake @c waitForPlaylistParsed
-    std::condition_variable m_wakePlaylistParsed;
-
-    /// Flag to indicate when playlist has been parsed.
-    bool m_playlistParsed;
-
-    /// The result of parsing the playlist.
-    PlaylistParseResult m_parseResult;
-
-    /// The initial playlist Url.
-    std::string m_initialUrl;
-
-    /// Urls extracted from the playlist.
-    std::queue<std::string> m_urls;
+    /// A condition variable to wait for callbacks.
+    std::condition_variable m_callbackOccurred;
 };
 
-std::shared_ptr<TestParserObserver> TestParserObserver::create() {
-    std::shared_ptr<TestParserObserver> playlistObserver(new TestParserObserver);
-    return playlistObserver;
-}
-
-void TestParserObserver::onPlaylistParsed(std::string playlistUrl, std::queue<std::string> urls,
-            avsCommon::utils::playlistParser::PlaylistParseResult parseResult) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_playlistParsed = true;
-    m_parseResult = parseResult;
-    m_urls = urls;
-    m_initialUrl = playlistUrl;
-    m_wakePlaylistParsed.notify_one();
-}
-
-bool TestParserObserver::waitForPlaylistParsed(const PlaylistParseResult expectedResult,
-            const std::chrono::seconds duration) {
-    std::unique_lock<std::mutex> lock(m_mutex);
-    if (!m_wakePlaylistParsed.wait_for(lock, duration, [this]() { return m_playlistParsed; } ))
-    {
-        return false;
+class PlaylistParserTest : public ::testing::Test {
+protected:
+    void SetUp() {
+        mockFactory = std::make_shared<MockContentFetcherFactory>();
+        playlistParser = PlaylistParser::create(mockFactory);
+        testObserver = std::make_shared<TestParserObserver>();
     }
-    return (expectedResult == m_parseResult);
-}
 
-TestParserObserver::TestParserObserver()
-        :
-        m_playlistParsed{false},
-        m_parseResult{PlaylistParseResult::PARSE_RESULT_ERROR} {
-}
+    void TearDown() {
+        playlistParser->shutdown();
+    }
 
-class PlaylistParserTest: public ::testing::Test{
-public:
-    void SetUp() override;
-
-    void TearDown() override;
+    /// A mock factory to create mock content fetchers
+    std::shared_ptr<MockContentFetcherFactory> mockFactory;
 
     /// Instance of the @c PlaylistParser.
-    std::shared_ptr<PlaylistParser> m_playlistParser;
+    std::shared_ptr<PlaylistParser> playlistParser;
 
     /// Instance of the @c TestParserObserver.
-    std::shared_ptr<TestParserObserver> m_parserObserver;
-
-    /// The main event loop.
-    GMainLoop* m_loop;
-
-    /// The thread on which the main event loop is launched.
-    std::thread m_mainLoopThread;
-
+    std::shared_ptr<TestParserObserver> testObserver;
 };
-
-void PlaylistParserTest::SetUp() {
-    m_loop = g_main_loop_new(nullptr, false);
-    ASSERT_TRUE(m_loop);
-    m_mainLoopThread = std::thread(g_main_loop_run, m_loop);
-    m_parserObserver = TestParserObserver::create();
-    m_playlistParser = PlaylistParser::create();
-    ASSERT_TRUE(m_playlistParser);
-}
-
-void PlaylistParserTest::TearDown() {
-    while (!g_main_loop_is_running(m_loop)){
-        std::this_thread::yield();
-    }
-    g_main_loop_quit(m_loop);
-    if (m_mainLoopThread.joinable()) {
-        m_mainLoopThread.join();
-    }
-    g_main_loop_unref(m_loop);
-}
 
 /**
  * Tests parsing of an empty playlist. Calls @c parsePlaylist and expects it returns false.
  */
-TEST_F(PlaylistParserTest, testEmptyUrl) {
-    ASSERT_FALSE(m_playlistParser->parsePlaylist("", m_parserObserver));
+TEST_F(PlaylistParserTest, test_emptyUrl) {
+    ASSERT_FALSE(playlistParser->parsePlaylist("", testObserver));
 }
 
 /**
  * Tests passing a @c nullptr for the observer.
  */
-TEST_F(PlaylistParserTest, testNullObserver) {
-    ASSERT_FALSE(m_playlistParser->parsePlaylist(FILE_URI_PREFIX + inputsDirPath + TEST_PLAYLIST, nullptr));
+TEST_F(PlaylistParserTest, test_nullObserver) {
+    ASSERT_FALSE(playlistParser->parsePlaylist("blah", nullptr));
 }
 
 /**
- * Tests parsing of a single playlist.
+ * Tests parsing of a simple M3U playlist.
  * Calls @c parsePlaylist and expects that the result of the parsing is successful.
  */
-TEST_F(PlaylistParserTest, testParsingPlaylist) {
-    ASSERT_TRUE(m_playlistParser->parsePlaylist(FILE_URI_PREFIX + inputsDirPath + TEST_PLAYLIST, m_parserObserver));
-    ASSERT_TRUE(m_parserObserver->waitForPlaylistParsed(PlaylistParseResult::PARSE_RESULT_SUCCESS));
+TEST_F(PlaylistParserTest, testTimer_parsingPlaylist) {
+    ASSERT_TRUE(playlistParser->parsePlaylist(TEST_M3U_PLAYLIST_URL, testObserver));
+    auto results = testObserver->waitForNCallbacks(TEST_M3U_PLAYLIST_URL_EXPECTED_PARSES);
+    ASSERT_EQ(TEST_M3U_PLAYLIST_URL_EXPECTED_PARSES, results.size());
+    for (unsigned int i = 0; i < results.size(); ++i) {
+        ASSERT_EQ(results.at(i).url, TEST_M3U_PLAYLIST_URLS.at(i));
+        ASSERT_EQ(results.at(i).duration, TEST_M3U_DURATIONS.at(i));
+        if (i == results.size() - 1) {
+            ASSERT_EQ(results.at(i).parseResult, avsCommon::utils::playlistParser::PlaylistParseResult::FINISHED);
+        } else {
+            ASSERT_EQ(results.at(i).parseResult, avsCommon::utils::playlistParser::PlaylistParseResult::STILL_ONGOING);
+        }
+    }
+}
+
+/**
+ * Tests parsing of a simple M3U playlist with relative urls.
+ * Calls @c parsePlaylist and expects that the result of the parsing is successful.
+ */
+TEST_F(PlaylistParserTest, testTimer_parsingRelativePlaylist) {
+    ASSERT_TRUE(playlistParser->parsePlaylist(TEST_M3U_RELATIVE_PLAYLIST_URL, testObserver));
+    auto results = testObserver->waitForNCallbacks(TEST_M3U_RELATIVE_PLAYLIST_URL_EXPECTED_PARSES);
+    ASSERT_EQ(TEST_M3U_RELATIVE_PLAYLIST_URL_EXPECTED_PARSES, results.size());
+    for (unsigned int i = 0; i < results.size(); ++i) {
+        ASSERT_EQ(results.at(i).url, TEST_M3U_RELATIVE_PLAYLIST_URLS.at(i));
+        if (i == results.size() - 1) {
+            ASSERT_EQ(results.at(i).parseResult, avsCommon::utils::playlistParser::PlaylistParseResult::FINISHED);
+        } else {
+            ASSERT_EQ(results.at(i).parseResult, avsCommon::utils::playlistParser::PlaylistParseResult::STILL_ONGOING);
+        }
+    }
+}
+
+/**
+ * Tests parsing of an extended M3U/HLS playlist.
+ * Calls @c parsePlaylist and expects that the result of the parsing is successful.
+ */
+TEST_F(PlaylistParserTest, testTimer_parsingHlsPlaylist) {
+    ASSERT_TRUE(playlistParser->parsePlaylist(TEST_HLS_PLAYLIST_URL, testObserver));
+    auto results = testObserver->waitForNCallbacks(TEST_HLS_PLAYLIST_URL_EXPECTED_PARSES);
+    ASSERT_EQ(TEST_HLS_PLAYLIST_URL_EXPECTED_PARSES, results.size());
+    for (unsigned int i = 0; i < results.size(); ++i) {
+        ASSERT_EQ(results.at(i).url, TEST_HLS_PLAYLIST_URLS.at(i));
+        ASSERT_EQ(results.at(i).duration, TEST_HLS_DURATIONS.at(i));
+        if (i == results.size() - 1) {
+            ASSERT_EQ(results.at(i).parseResult, avsCommon::utils::playlistParser::PlaylistParseResult::FINISHED);
+        } else {
+            ASSERT_EQ(results.at(i).parseResult, avsCommon::utils::playlistParser::PlaylistParseResult::STILL_ONGOING);
+        }
+    }
 }
 
 /**
  * Tests parsing of a PLS playlist.
  * Calls @c parsePlaylist and expects that the result of the parsing is successful.
  */
-TEST_F(PlaylistParserTest, testParsingPlsPlaylist) {
-    ASSERT_TRUE(m_playlistParser->parsePlaylist(FILE_URI_PREFIX + inputsDirPath + TEST_PLS_PLAYLIST, m_parserObserver));
-    ASSERT_TRUE(m_parserObserver->waitForPlaylistParsed(PlaylistParseResult::PARSE_RESULT_SUCCESS));
-}
-
-/**
- * Tests parsing of multiple playlists one of which is a recursive playlist.
- * Calls @c parsePlaylist on the different playlists and expects each of them to be parsed successfully.
- */
-TEST_F(PlaylistParserTest, testParsingMultiplePlaylists) {
-    auto m_parserObserver2 = TestParserObserver::create();
-    ASSERT_TRUE(m_playlistParser->parsePlaylist(FILE_URI_PREFIX + inputsDirPath + TEST_PLAYLIST, m_parserObserver));
-    ASSERT_TRUE(m_playlistParser->parsePlaylist(FILE_URI_PREFIX + inputsDirPath + TEST_ASX_PLAYLIST, m_parserObserver2));
-    ASSERT_TRUE(m_parserObserver->waitForPlaylistParsed((PlaylistParseResult::PARSE_RESULT_SUCCESS)));
-    ASSERT_TRUE(m_parserObserver2->waitForPlaylistParsed((PlaylistParseResult::PARSE_RESULT_SUCCESS)));
-}
-
-/**
- * Tests parsing of a single playlist which is a format that cannot be handled.
- * Calls @c parsePlaylist and expects that the result of the parsing is an error.
- */
-TEST_F(PlaylistParserTest, testUnparsablePlaylist) {
-    ASSERT_TRUE(m_playlistParser->parsePlaylist(FILE_URI_PREFIX + inputsDirPath + TEST_HLS_PLAYLIST, m_parserObserver));
-    ASSERT_FALSE(m_parserObserver->waitForPlaylistParsed((PlaylistParseResult::PARSE_RESULT_SUCCESS)));
-}
-
-} // namespace test
-} // namespace playlistParser
-} // namespace alexaClientSDK
-
-int main (int argc, char** argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-
-    if (argc < 2) {
-        std::cerr << "Usage: PlaylistParserTest <path/to/test/inputs/folder>" << std::endl;
-    } else {
-        alexaClientSDK::playlistParser::test::inputsDirPath = std::string(argv[1]);
-        return RUN_ALL_TESTS();
+TEST_F(PlaylistParserTest, testTimer_parsingPlsPlaylist) {
+    ASSERT_TRUE(playlistParser->parsePlaylist(TEST_PLS_PLAYLIST_URL, testObserver));
+    auto results = testObserver->waitForNCallbacks(TEST_PLS_PLAYLIST_URL_EXPECTED_PARSES);
+    ASSERT_EQ(TEST_PLS_PLAYLIST_URL_EXPECTED_PARSES, results.size());
+    for (unsigned int i = 0; i < results.size(); ++i) {
+        ASSERT_EQ(results.at(i).url, TEST_PLS_PLAYLIST_URLS.at(i));
+        if (i == results.size() - 1) {
+            ASSERT_EQ(results.at(i).parseResult, avsCommon::utils::playlistParser::PlaylistParseResult::FINISHED);
+        } else {
+            ASSERT_EQ(results.at(i).parseResult, avsCommon::utils::playlistParser::PlaylistParseResult::STILL_ONGOING);
+        }
     }
 }
+
+/**
+ * Tests that the playlist parser skips parsing of unwanted playlist types.
+ * Calls @c parsePlaylist and expects that the result of the parsing is successful.
+ */
+TEST_F(PlaylistParserTest, testTimer_notParsingCertainPlaylistTypes) {
+    ASSERT_TRUE(
+        playlistParser->parsePlaylist(TEST_HLS_PLAYLIST_URL, testObserver, {PlaylistParser::PlaylistType::EXT_M3U}));
+    auto results = testObserver->waitForNCallbacks(1);
+    ASSERT_EQ(NUM_PARSES_EXPECTED_WHEN_NO_PARSING, results.size());
+    ASSERT_EQ(results.at(0).url, TEST_HLS_PLAYLIST_URL);
+}
+
+/**
+ * Tests parsing of a live stream HLS playlist.
+ * Calls @c parsePlaylist and expects that the result of the parsing is successful.
+ */
+TEST_F(PlaylistParserTest, testTimer_parsingLiveStreamPlaylist) {
+    ASSERT_TRUE(playlistParser->parsePlaylist(TEST_HLS_LIVE_STREAM_PLAYLIST_URL, testObserver));
+    auto results = testObserver->waitForNCallbacks(TEST_HLS_LIVE_STREAM_PLAYLIST_EXPECTED_PARSES);
+    ASSERT_EQ(TEST_HLS_LIVE_STREAM_PLAYLIST_EXPECTED_PARSES, results.size());
+    for (unsigned int i = 0; i < results.size(); ++i) {
+        ASSERT_EQ(results.at(i).url, TEST_HLS_LIVE_STREAM_PLAYLIST_URLS.at(i));
+        ASSERT_EQ(results.at(i).duration, TEST_HLS_LIVE_STREAM_DURATIONS.at(i));
+        if (i == results.size() - 1) {
+            ASSERT_EQ(results.at(i).parseResult, avsCommon::utils::playlistParser::PlaylistParseResult::FINISHED);
+        } else {
+            ASSERT_EQ(results.at(i).parseResult, avsCommon::utils::playlistParser::PlaylistParseResult::STILL_ONGOING);
+        }
+    }
+}
+
+}  // namespace test
+}  // namespace playlistParser
+}  // namespace alexaClientSDK

@@ -1,7 +1,5 @@
 /*
- * SharedDataStreamTest.cpp
- *
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -52,7 +50,7 @@ struct MinimalTraits {
     /// Forward declare a @c ConditionVariable type.
     class ConditionVariable;
     /// Unique string describing this set of traits.
-    static constexpr const char * traitsName = "alexaClientSDK::avsCommon::utils::sds::test::MinimalTraits";
+    static constexpr const char* traitsName = "alexaClientSDK::avsCommon::utils::sds::test::MinimalTraits";
 };
 
 /**
@@ -72,7 +70,7 @@ struct MinimalTraits2 {
     /// Same @c ConditionVariable type as @c MinimalTraits.
     using ConditionVariable = MinimalTraits::ConditionVariable;
     /// Unique string descring this set of traits.  Note that this differes from @c MinimalTraits::traitsName.
-    static constexpr const char * traitsName = "alexaClientSDK::avsCommon::utils::sds::test::MinimalTraits2";
+    static constexpr const char* traitsName = "alexaClientSDK::avsCommon::utils::sds::test::MinimalTraits2";
 };
 
 /// An @c AtomicIndex type with the minimum functionality required by SDS.
@@ -123,7 +121,7 @@ public:
         return InProcessSDS::Buffer::size();
     }
     /// Get a pointer to the raw data buffer.
-    InProcessSDS::Buffer::value_type * data() {
+    InProcessSDS::Buffer::value_type* data() {
         return InProcessSDS::Buffer::data();
     }
 };
@@ -154,17 +152,14 @@ public:
         InProcessSDS::ConditionVariable::wait(*lockPointer);
     }
     /// Wait forever for @c pred to be true.
-    template<class Predicate>
+    template <class Predicate>
     void wait(std::unique_lock<Mutex>& lock, Predicate pred) {
         auto lockPointer = reinterpret_cast<std::unique_lock<InProcessSDS::Mutex>*>(&lock);
         InProcessSDS::ConditionVariable::wait(*lockPointer, pred);
     }
     /// Wait until timeout for @c pred to be true.
-    template<class Rep, class Period, class Predicate>
-    bool wait_for(
-        std::unique_lock<Mutex>& lock,
-        const std::chrono::duration<Rep, Period>& rel_time,
-        Predicate pred) {
+    template <class Rep, class Period, class Predicate>
+    bool wait_for(std::unique_lock<Mutex>& lock, const std::chrono::duration<Rep, Period>& rel_time, Predicate pred) {
         auto lockPointer = reinterpret_cast<std::unique_lock<InProcessSDS::Mutex>*>(&lock);
         return InProcessSDS::ConditionVariable::wait_for(*lockPointer, rel_time, pred);
     }
@@ -207,10 +202,10 @@ private:
 };
 
 std::future<size_t> Source::run(
-        std::shared_ptr<Sds::Writer> writer,
-        size_t frequencyHz,
-        size_t blockSizeWords,
-        size_t maxWords) {
+    std::shared_ptr<Sds::Writer> writer,
+    size_t frequencyHz,
+    size_t blockSizeWords,
+    size_t maxWords) {
     m_counter = 0;
     size_t wordSize = writer->getWordSize();
     std::chrono::nanoseconds period(frequencyHz ? ((1000000000 / frequencyHz) * blockSizeWords) : 0);
@@ -218,8 +213,8 @@ std::future<size_t> Source::run(
         period,
         timing::Timer::PeriodType::RELATIVE,
         timing::Timer::FOREVER,
-        [this, writer, frequencyHz, blockSizeWords, maxWords, wordSize] {
-            uint8_t block[blockSizeWords * writer->getWordSize()];
+        [this, writer, blockSizeWords, maxWords, wordSize] {
+            std::vector<uint8_t> block(blockSizeWords * writer->getWordSize());
             size_t wordsToWrite = 0;
             for (size_t word = 0; word < blockSizeWords; ++word) {
                 for (size_t byte = 0; byte < wordSize; ++byte) {
@@ -237,10 +232,9 @@ std::future<size_t> Source::run(
             }
             ssize_t nWords;
             do {
-                nWords =
-                    writer->write(block, wordsToWrite);
+                nWords = writer->write(block.data(), wordsToWrite);
             } while (nWords == Sds::Writer::Error::WOULDBLOCK);
-            bool unexpectedWriteReturn = nWords != static_cast<ssize_t>(sizeof(block) / wordSize);
+            bool unexpectedWriteReturn = nWords != static_cast<ssize_t>(block.size() / wordSize);
             EXPECT_FALSE(unexpectedWriteReturn) << "write returned " << nWords;
             if (unexpectedWriteReturn || (maxWords > 0 && m_counter == maxWords)) {
                 m_timer.stop();
@@ -276,6 +270,7 @@ public:
         size_t frequencyHz,
         size_t blockSizeWords,
         size_t maxWords = 0);
+
 private:
     /// The @c Timer to use for receiving data.
     timing::Timer m_timer;
@@ -288,10 +283,10 @@ private:
 };
 
 std::future<size_t> Sink::run(
-        std::shared_ptr<Sds::Reader> reader,
-        size_t frequencyHz,
-        size_t blockSizeWords,
-        size_t maxWords) {
+    std::shared_ptr<Sds::Reader> reader,
+    size_t frequencyHz,
+    size_t blockSizeWords,
+    size_t maxWords) {
     m_counter = 0;
     size_t wordSize = reader->getWordSize();
     std::chrono::nanoseconds period(frequencyHz ? ((1000000000 / frequencyHz) * blockSizeWords) : 0);
@@ -299,9 +294,9 @@ std::future<size_t> Sink::run(
         period,
         timing::Timer::PeriodType::RELATIVE,
         timing::Timer::FOREVER,
-        [this, reader, frequencyHz, blockSizeWords, maxWords, wordSize] {
-            uint8_t block[blockSizeWords * wordSize];
-            ssize_t nWords = reader->read(block, sizeof(block) / wordSize);
+        [this, reader, blockSizeWords, maxWords, wordSize] {
+            std::vector<uint8_t> block(blockSizeWords * wordSize);
+            ssize_t nWords = reader->read(block.data(), block.size() / wordSize);
             if (nWords == Sds::Reader::Error::WOULDBLOCK) {
                 return;
             } else if (nWords == Sds::Reader::Error::CLOSED) {
@@ -309,11 +304,11 @@ std::future<size_t> Sink::run(
                 m_promise.set_value(m_counter);
                 return;
             }
-            bool unexpectedReadReturn = nWords <= 0 || nWords > static_cast<ssize_t>(sizeof(block) / wordSize);
+            bool unexpectedReadReturn = nWords <= 0 || nWords > static_cast<ssize_t>(block.size() / wordSize);
             EXPECT_FALSE(unexpectedReadReturn) << "read returned " << nWords;
             if (unexpectedReadReturn) {
-                    m_timer.stop();
-                    m_promise.set_value(m_counter);
+                m_timer.stop();
+                m_promise.set_value(m_counter);
             }
             for (ssize_t word = 0; word < nWords; ++word) {
                 for (size_t byte = 0; byte < wordSize; ++byte) {
@@ -341,7 +336,7 @@ private:
 };
 
 /// This tests @c SharedDataStream::calculateCreateSize() and @c SharedDataStream::create().
-TEST_F(SharedDataStreamTest, sdsCalculateCreateSize) {
+TEST_F(SharedDataStreamTest, test_sdsCalculateCreateSize) {
     static const size_t SDK_MAXREADERS_REQUIRED = 2;
     static const size_t SDK_WORDSIZE_REQUIRED = sizeof(uint16_t);
     size_t maxReaders, wordCount, wordSize;
@@ -417,7 +412,7 @@ TEST_F(SharedDataStreamTest, sdsCalculateCreateSize) {
 }
 
 /// This tests @c SharedDataStream::open().
-TEST_F(SharedDataStreamTest, sdsOpen) {
+TEST_F(SharedDataStreamTest, test_sdsOpen) {
     static const size_t WORDSIZE = 2;
     static const size_t WORDCOUNT = 10;
     static const size_t MAXREADERS = 2;
@@ -441,25 +436,25 @@ TEST_F(SharedDataStreamTest, sdsOpen) {
     ASSERT_EQ(sds3, nullptr);
 
     // Verify that open fails if magic number is wrong.
-    uint32_t * buffer32 = reinterpret_cast<uint32_t *>(buffer->data());
-    buffer32[0]= ~buffer32[0];
+    uint32_t* buffer32 = reinterpret_cast<uint32_t*>(buffer->data());
+    buffer32[0] = ~buffer32[0];
     sds2 = Sds::open(buffer);
     ASSERT_EQ(sds2, nullptr);
-    buffer32[0]= ~buffer32[0];
+    buffer32[0] = ~buffer32[0];
     sds2 = Sds::open(buffer);
     ASSERT_NE(sds2, nullptr);
 
     // Verify that open fails if version is incompatible.
-    buffer32[1]= ~buffer32[1];
+    buffer32[1] = ~buffer32[1];
     sds2 = Sds::open(buffer);
     ASSERT_EQ(sds2, nullptr);
-    buffer32[1]= ~buffer32[1];
+    buffer32[1] = ~buffer32[1];
     sds2 = Sds::open(buffer);
     ASSERT_NE(sds2, nullptr);
 }
 
 /// This tests @c SharedDataStream::createWriter().
-TEST_F(SharedDataStreamTest, createWriter) {
+TEST_F(SharedDataStreamTest, test_createWriter) {
     static const size_t WORDSIZE = 1;
     static const size_t WORDCOUNT = 1;
     static const size_t MAXREADERS = 1;
@@ -511,7 +506,7 @@ TEST_F(SharedDataStreamTest, createWriter) {
 }
 
 /// This tests @c SharedDataStream::createReader().
-TEST_F(SharedDataStreamTest, createReader) {
+TEST_F(SharedDataStreamTest, test_createReader) {
     static const size_t WORDSIZE = 1;
     static const size_t WORDCOUNT = 1;
     static const size_t MAXREADERS = 2;
@@ -576,7 +571,7 @@ TEST_F(SharedDataStreamTest, createReader) {
 }
 
 /// This tests @c SharedDataStream::Reader::read().
-TEST_F(SharedDataStreamTest, readerRead) {
+TEST_F(SharedDataStreamTest, test_readerRead) {
     static const size_t WORDSIZE = 2;
     static const size_t WORDCOUNT = 2;
     static const size_t MAXREADERS = 2;
@@ -637,14 +632,22 @@ TEST_F(SharedDataStreamTest, readerRead) {
 
     // Verify blocked reader unblocks.
     ASSERT_TRUE(blocking->seek(0, Sds::Reader::Reference::BEFORE_WRITER));
-    auto numRead = std::async([blocking, readBuf] () mutable { return blocking->read(readBuf, WORDCOUNT, TIMEOUT); });
+    auto numRead = std::async([blocking, readBuf]() mutable { return blocking->read(readBuf, WORDCOUNT, TIMEOUT); });
     ASSERT_NE(numRead.wait_for(std::chrono::milliseconds::zero()), std::future_status::ready);
     ASSERT_EQ(writer->write(writeBuf, WORDCOUNT), static_cast<ssize_t>(WORDCOUNT));
     ASSERT_EQ(numRead.get(), static_cast<ssize_t>(WORDCOUNT));
+
+    // Verify blocked reader which is seeked to a future index unblocks.
+    size_t indexesToSkip = 1;
+    ASSERT_TRUE(blocking->seek(indexesToSkip, Sds::Reader::Reference::AFTER_READER));
+    numRead = std::async([blocking, readBuf]() mutable { return blocking->read(readBuf, WORDCOUNT, TIMEOUT); });
+    ASSERT_NE(numRead.wait_for(std::chrono::milliseconds::zero()), std::future_status::ready);
+    ASSERT_EQ(writer->write(writeBuf, WORDCOUNT), static_cast<ssize_t>(WORDCOUNT));
+    ASSERT_EQ(numRead.get(), static_cast<ssize_t>(WORDCOUNT - indexesToSkip));
 }
 
 /// This tests @c SharedDataStream::Reader::seek().
-TEST_F(SharedDataStreamTest, readerSeek) {
+TEST_F(SharedDataStreamTest, test_readerSeek) {
     static const size_t WORDSIZE = 2;
     static const size_t WORDCOUNT = 10;
     static const size_t MAXREADERS = 2;
@@ -686,18 +689,20 @@ TEST_F(SharedDataStreamTest, readerSeek) {
 
     // Verify we can seek forward from the current read position to the end of the written data.
     seekWords = writeWords - readerPos;
-    ASSERT_TRUE(reader->seek(seekWords,  Sds::Reader::Reference::AFTER_READER));
+    ASSERT_TRUE(reader->seek(seekWords, Sds::Reader::Reference::AFTER_READER));
     readerPos += seekWords;
     ASSERT_EQ(reader->read(readBuf, readWords), Sds::Reader::Error::WOULDBLOCK);
 
-    // Verify we can't seek forward from the current read position beyond the end of the written data.
+    // Verify we can seek forward from the current read position beyond the end of the written data.
     seekWords = 1;
-    ASSERT_FALSE(reader->seek(seekWords,  Sds::Reader::Reference::AFTER_READER));
+    ASSERT_TRUE(reader->seek(seekWords, Sds::Reader::Reference::AFTER_READER));
     ASSERT_EQ(reader->read(readBuf, readWords), Sds::Reader::Error::WOULDBLOCK);
+    readerPos += seekWords;
 
     //--- Sds::Reader::Reference::BEFORE_READER ---
 
     // Verify we can seek backward from the current read position to the middle of the written data.
+    seekWords = 2;
     ASSERT_TRUE(reader->seek(seekWords, Sds::Reader::Reference::BEFORE_READER));
     readerPos -= seekWords;
     ASSERT_EQ(reader->read(readBuf, readWords), static_cast<ssize_t>(readWords));
@@ -758,13 +763,14 @@ TEST_F(SharedDataStreamTest, readerSeek) {
     readerPos = seekWords;
     ASSERT_EQ(reader->read(readBuf, readWords), Sds::Reader::Error::WOULDBLOCK);
 
-    // Verify we can't seek directly to a position beyond the end of the written data.
+    // Verify we can seek directly to a position beyond the end of the written data.
     seekWords = writerPos + 1;
-    ASSERT_FALSE(reader->seek(seekWords));
+    ASSERT_TRUE(reader->seek(seekWords));
     ASSERT_EQ(reader->read(readBuf, readWords), Sds::Reader::Error::WOULDBLOCK);
+    readerPos = seekWords;
 
     // Verify we can seek directly to the middle of the written data.
-    seekWords = writerPos - 1;
+    seekWords = writerPos - 2;
     ASSERT_TRUE(reader->seek(seekWords));
     readerPos = seekWords;
     ASSERT_EQ(reader->read(readBuf, readWords), static_cast<ssize_t>(readWords));
@@ -788,7 +794,7 @@ TEST_F(SharedDataStreamTest, readerSeek) {
 }
 
 /// This tests @c SharedDataStream::Reader::tell().
-TEST_F(SharedDataStreamTest, readerTell) {
+TEST_F(SharedDataStreamTest, test_readerTell) {
     static const size_t WORDSIZE = 2;
     static const size_t WORDCOUNT = 10;
     static const size_t MAXREADERS = 2;
@@ -851,7 +857,7 @@ TEST_F(SharedDataStreamTest, readerTell) {
 }
 
 /// This tests @c SharedDataStream::Reader::close().
-TEST_F(SharedDataStreamTest, readerClose) {
+TEST_F(SharedDataStreamTest, test_readerClose) {
     static const size_t WORDSIZE = 2;
     static const size_t WORDCOUNT = 10;
     static const size_t MAXREADERS = 2;
@@ -888,7 +894,7 @@ TEST_F(SharedDataStreamTest, readerClose) {
 }
 
 /// This tests @c SharedDataStream::Reader::getId().
-TEST_F(SharedDataStreamTest, readerGetId) {
+TEST_F(SharedDataStreamTest, test_readerGetId) {
     static const size_t WORDSIZE = 1;
     static const size_t WORDCOUNT = 1;
     static const size_t MAXREADERS = 10;
@@ -919,7 +925,7 @@ TEST_F(SharedDataStreamTest, readerGetId) {
 }
 
 /// This tests @c SharedDataStream::Reader::getWordSize().
-TEST_F(SharedDataStreamTest, readerGetWordSize) {
+TEST_F(SharedDataStreamTest, test_readerGetWordSize) {
     static const size_t MINWORDSIZE = 1;
     static const size_t MAXWORDSIZE = 8;
     static const size_t WORDCOUNT = 1;
@@ -937,12 +943,13 @@ TEST_F(SharedDataStreamTest, readerGetWordSize) {
 }
 
 /// This tests @c SharedDataStream::Writer::write().
-TEST_F(SharedDataStreamTest, writerWrite) {
+TEST_F(SharedDataStreamTest, test_writerWrite) {
     static const size_t WORDSIZE = 2;
     static const size_t WORDCOUNT = 2;
     static const size_t MAXREADERS = 1;
+    static const std::chrono::milliseconds TIMEOUT{100};
 
-    // Initialize two sdses.
+    // Initialize three sdses.
     size_t bufferSize = Sds::calculateBufferSize(WORDCOUNT, WORDSIZE, MAXREADERS);
     auto buffer1 = std::make_shared<Sds::Buffer>(bufferSize);
     auto sds1 = Sds::create(buffer1, WORDSIZE, MAXREADERS);
@@ -950,22 +957,28 @@ TEST_F(SharedDataStreamTest, writerWrite) {
     auto buffer2 = std::make_shared<Sds::Buffer>(bufferSize);
     auto sds2 = Sds::create(buffer2, WORDSIZE, MAXREADERS);
     ASSERT_NE(sds2, nullptr);
+    auto buffer3 = std::make_shared<Sds::Buffer>(bufferSize);
+    auto sds3 = Sds::create(buffer3, WORDSIZE, MAXREADERS);
+    ASSERT_NE(sds3, nullptr);
 
-    // Create nonblockable and all-or-nothing writers.
+    // Create nonblockable, all-or-nothing and blocking writers.
     auto nonblockable = sds1->createWriter(Sds::Writer::Policy::NONBLOCKABLE);
     ASSERT_NE(nonblockable, nullptr);
     auto allOrNothing = sds2->createWriter(Sds::Writer::Policy::ALL_OR_NOTHING);
     ASSERT_NE(allOrNothing, nullptr);
+    std::shared_ptr<Sds::Writer> blocking = sds3->createWriter(Sds::Writer::Policy::BLOCKING);
+    ASSERT_NE(blocking, nullptr);
 
     // Verify bad parameter handling.
     uint8_t writeBuf[WORDSIZE * WORDCOUNT];
     ASSERT_EQ(nonblockable->write(nullptr, WORDCOUNT), Sds::Writer::Error::INVALID);
     ASSERT_EQ(nonblockable->write(writeBuf, 0), Sds::Writer::Error::INVALID);
 
-    // Verify both writers can write data to their buffers.
+    // Verify all writers can write data to their buffers.
     size_t writeWords = WORDCOUNT / 2;
     ASSERT_EQ(nonblockable->write(writeBuf, writeWords), static_cast<ssize_t>(writeWords));
     ASSERT_EQ(allOrNothing->write(writeBuf, writeWords), static_cast<ssize_t>(writeWords));
+    ASSERT_EQ(blocking->write(writeBuf, writeWords), static_cast<ssize_t>(writeWords));
 
     // Verify nonblockable writer can overflow the buffer without blocking.
     writeWords = WORDCOUNT;
@@ -973,10 +986,35 @@ TEST_F(SharedDataStreamTest, writerWrite) {
 
     // Verify all-or-nothing writer can't overflow the buffer.
     ASSERT_EQ(allOrNothing->write(writeBuf, writeWords), Sds::Writer::Error::WOULDBLOCK);
+
+    // Verify blocking writer can fill the buffer.
+    ASSERT_EQ(blocking->write(writeBuf, WORDCOUNT), static_cast<ssize_t>(WORDCOUNT / 2));
+
+    // Verify blocking writer can't write to a full buffer.
+    ASSERT_EQ(blocking->write(writeBuf, writeWords, TIMEOUT), Sds::Writer::Error::TIMEDOUT);
+
+    // Verify blocked writer unblocks.
+    writeWords = 1;
+    auto reader3 = sds3->createReader(Sds::Reader::Policy::NONBLOCKING);
+    auto result = std::async([blocking, writeBuf]() mutable { return blocking->write(writeBuf, WORDCOUNT, TIMEOUT); });
+    ASSERT_NE(result.wait_for(std::chrono::milliseconds::zero()), std::future_status::ready);
+    ASSERT_TRUE(reader3->seek(writeWords, Sds::Reader::Reference::AFTER_READER));
+    ASSERT_EQ(result.get(), static_cast<ssize_t>(writeWords));
+
+    // Verify all-or-nothing writer can't overrun a reader who is in the future.
+    auto reader2 = sds2->createReader(Sds::Reader::Policy::NONBLOCKING);
+    ASSERT_NE(reader2, nullptr);
+    ASSERT_TRUE(reader2->seek(WORDCOUNT, Sds::Reader::Reference::AFTER_READER));
+    writeWords = WORDCOUNT * 2;
+    ASSERT_EQ(allOrNothing->write(writeBuf, writeWords), Sds::Writer::Error::WOULDBLOCK);
+
+    // Verify all-or-nothing writer can discard data that will not be read by a reader who is waiting in the future.
+    writeWords = WORDCOUNT + WORDCOUNT / 2;
+    ASSERT_EQ(allOrNothing->write(writeBuf, writeWords), static_cast<ssize_t>(writeWords));
 }
 
 /// This tests @c SharedDataStream::Writer::tell().
-TEST_F(SharedDataStreamTest, writerTell) {
+TEST_F(SharedDataStreamTest, test_writerTell) {
     static const size_t WORDSIZE = 1;
     static const size_t WORDCOUNT = 1;
     static const size_t MAXREADERS = 1;
@@ -1005,7 +1043,7 @@ TEST_F(SharedDataStreamTest, writerTell) {
 }
 
 /// This tests @c SharedDataStream::Writer::close().
-TEST_F(SharedDataStreamTest, writerClose) {
+TEST_F(SharedDataStreamTest, test_writerClose) {
     static const size_t WORDSIZE = 1;
     static const size_t WORDCOUNT = 1;
     static const size_t MAXREADERS = 1;
@@ -1028,7 +1066,7 @@ TEST_F(SharedDataStreamTest, writerClose) {
 }
 
 /// This tests @c SharedDataStream::Writer::getWordSize().
-TEST_F(SharedDataStreamTest, writerGetWordSize) {
+TEST_F(SharedDataStreamTest, test_writerGetWordSize) {
     static const size_t MINWORDSIZE = 1;
     static const size_t MAXWORDSIZE = 8;
     static const size_t WORDCOUNT = 1;
@@ -1046,7 +1084,7 @@ TEST_F(SharedDataStreamTest, writerGetWordSize) {
 }
 
 /// This tests a nonblockable, slow @c Writer streaming concurrently to two fast @c Readers (one of each type).
-TEST_F(SharedDataStreamTest, concurrencyNonblockableWriterDualReader) {
+TEST_F(SharedDataStreamTest, testTimer_concurrencyNonblockableWriterDualReader) {
     static const size_t WORDSIZE = 2;
     static const size_t WRITE_FREQUENCY_HZ = 1000;
     static const size_t READ_FREQUENCY_HZ = 0;
@@ -1061,7 +1099,7 @@ TEST_F(SharedDataStreamTest, concurrencyNonblockableWriterDualReader) {
     auto buffer = std::make_shared<Sds::Buffer>(bufferSize);
     auto sds = Sds::create(buffer, WORDSIZE, MAXREADERS);
     ASSERT_TRUE(sds);
-    
+
     auto writer = sds->createWriter(Sds::Writer::Policy::NONBLOCKABLE);
     ASSERT_TRUE(writer);
     auto blockingReader = sds->createReader(Sds::Reader::Policy::BLOCKING);
@@ -1081,7 +1119,7 @@ TEST_F(SharedDataStreamTest, concurrencyNonblockableWriterDualReader) {
 }
 
 /// This tests an all-or-nothing, fast @c Writer streaming concurrently to a slow non-blocking @c Reader.
-TEST_F(SharedDataStreamTest, concurrencyAllOrNothingWriterNonblockingReader) {
+TEST_F(SharedDataStreamTest, test_concurrencyAllOrNothingWriterNonblockingReader) {
     static const size_t WORDSIZE = 1;
     static const size_t WRITE_FREQUENCY_HZ = 320000;
     static const size_t READ_FREQUENCY_HZ = 160000;
@@ -1096,7 +1134,7 @@ TEST_F(SharedDataStreamTest, concurrencyAllOrNothingWriterNonblockingReader) {
     auto buffer = std::make_shared<Sds::Buffer>(bufferSize);
     auto sds = Sds::create(buffer, WORDSIZE, MAXREADERS);
     ASSERT_TRUE(sds);
-    
+
     std::shared_ptr<Sds::Writer> writer = sds->createWriter(Sds::Writer::Policy::ALL_OR_NOTHING);
     ASSERT_TRUE(writer);
     auto reader = sds->createReader(Sds::Reader::Policy::NONBLOCKING);
@@ -1110,7 +1148,7 @@ TEST_F(SharedDataStreamTest, concurrencyAllOrNothingWriterNonblockingReader) {
 }
 
 /// This tests a @c Writer from one SDS streaming to a @c Reader from a different SDS, usig a shared @c Buffer.
-TEST_F(SharedDataStreamTest, concurrencyMultipleSds) {
+TEST_F(SharedDataStreamTest, test_concurrencyMultipleSds) {
     static const size_t WORDSIZE = 1;
     static const size_t WRITE_FREQUENCY_HZ = 320000;
     static const size_t READ_FREQUENCY_HZ = 160000;
@@ -1141,8 +1179,75 @@ TEST_F(SharedDataStreamTest, concurrencyMultipleSds) {
     ASSERT_EQ(caWords.get(), TEST_SIZE_WORDS);
 }
 
-} // namespace test
-} // namespace sds
-} // namespace utils
-} // namespace avsCommon
-} // namespace alexaClientSDK
+/// This tests that a @c Reader closes if a @c Writer is attached and closed before writing anything
+TEST_F(SharedDataStreamTest, test_writerClosedBeforeWriting) {
+    static const size_t WORDSIZE = 2;
+    static const size_t WORDCOUNT = 2;
+    static const size_t MAXREADERS = 2;
+    static const std::chrono::milliseconds READ_TIMEOUT{100};
+    // explicitly set the time for closing the writer to be less than the READ_TIMEOUT
+    static const std::chrono::milliseconds CLOSE_WRITER_AFTER_READ{50};
+
+    // Initialize an sds.
+    size_t bufferSize = Sds::calculateBufferSize(WORDCOUNT, WORDSIZE, MAXREADERS);
+    auto buffer = std::make_shared<Sds::Buffer>(bufferSize);
+    auto sds = Sds::create(buffer, WORDSIZE, MAXREADERS);
+    ASSERT_NE(sds, nullptr);
+
+    uint8_t readBuf[WORDSIZE * WORDCOUNT * 2];
+
+    // Create blocking reader.
+    std::shared_ptr<Sds::Reader> blocking = sds->createReader(Sds::Reader::Policy::BLOCKING);
+    ASSERT_NE(blocking, nullptr);
+
+    // Attach a writer.
+    auto writer = sds->createWriter(Sds::Writer::Policy::NONBLOCKABLE);
+    ASSERT_NE(writer, nullptr);
+
+    // Close the writer before reader times out
+    auto writerCloseThread = std::async(std::launch::async, [&writer]() {
+        std::this_thread::sleep_for(CLOSE_WRITER_AFTER_READ);
+        writer->close();
+        return true;
+    });
+
+    auto error = blocking->read(readBuf, WORDCOUNT, READ_TIMEOUT);
+
+    // Ensure that the reader did not timeout
+    ASSERT_EQ(error, Sds::Reader::Error::CLOSED);
+}
+
+/// This tests that a @c Reader closes if a @c Writer is attached and closed before the @c Reader is first attached
+TEST_F(SharedDataStreamTest, test_writerClosedBeforeAttachingReader) {
+    static const size_t WORDSIZE = 2;
+    static const size_t WORDCOUNT = 2;
+    static const size_t MAXREADERS = 2;
+
+    // Initialize an sds.
+    size_t bufferSize = Sds::calculateBufferSize(WORDCOUNT, WORDSIZE, MAXREADERS);
+    auto buffer = std::make_shared<Sds::Buffer>(bufferSize);
+    auto sds = Sds::create(buffer, WORDSIZE, MAXREADERS);
+    ASSERT_NE(sds, nullptr);
+
+    uint8_t readBuf[WORDSIZE * WORDCOUNT * 2];
+
+    auto writer = sds->createWriter(Sds::Writer::Policy::NONBLOCKABLE);
+    ASSERT_NE(writer, nullptr);
+
+    // Close the writer before creating reader
+    writer->close();
+
+    // Create blocking reader.
+    auto blocking = sds->createReader(Sds::Reader::Policy::BLOCKING);
+    ASSERT_NE(blocking, nullptr);
+
+    auto error = blocking->read(readBuf, WORDCOUNT);
+
+    ASSERT_EQ(error, Sds::Reader::Error::CLOSED);
+}
+
+}  // namespace test
+}  // namespace sds
+}  // namespace utils
+}  // namespace avsCommon
+}  // namespace alexaClientSDK
